@@ -370,16 +370,27 @@ class MainWindow(QMainWindow):
         self.emotion_button_group.custom_emotion_requested.connect(self._on_custom_emotion_requested)
         emotion_voice_layout.addWidget(self.emotion_button_group)
 
-        # Current voice display label (moved to right of emotions)
-        self.current_voice_label = QLabel("Voice: (None)")
-        self.current_voice_label.setObjectName("voice_label")
+        # Voice picker button — clickable, opens Settings > Voices tab
+        self.current_voice_label = QPushButton("🎙 Voice: (None)")
+        self.current_voice_label.setObjectName("voice_picker_button")
+        self.current_voice_label.setToolTip("Click to switch voice")
+        self.current_voice_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.current_voice_label.clicked.connect(self._on_settings_clicked)
         emotion_voice_layout.addWidget(self.current_voice_label, 1)
+
+        # Clone Voice shortcut button — directly discoverable from the main window
+        self.clone_voice_button = QPushButton("+ Clone")
+        self.clone_voice_button.setObjectName("clone_voice_button")
+        self.clone_voice_button.setToolTip("Upload a voice sample to clone a voice")
+        self.clone_voice_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clone_voice_button.clicked.connect(self._on_settings_clicked)
+        emotion_voice_layout.addWidget(self.clone_voice_button)
 
         # Settings button with Qt standard icon
         self.settings_button = QPushButton()
         settings_icon = self.style().standardIcon(self.style().StandardPixmap.SP_FileDialogDetailedView)
         self.settings_button.setIcon(settings_icon)
-        self.settings_button.setFixedSize(QSize(24, 24))
+        self.settings_button.setFixedSize(QSize(28, 28))
         self.settings_button.setObjectName("settings_button")
         self.settings_button.setToolTip("Open Settings (Ctrl+S)")
         self.settings_button.clicked.connect(self._on_settings_clicked)
@@ -1520,7 +1531,7 @@ class MainWindow(QMainWindow):
         Args:
             voice_name: Name of the currently selected voice
         """
-        self.current_voice_label.setText(f"Voice: {voice_name}")
+        self.current_voice_label.setText(f"🎙 {voice_name}")
 
     def _get_ready_message(self) -> str:
         """
@@ -1680,7 +1691,7 @@ class MainWindow(QMainWindow):
         """
         current_preset = self.emotion_button_group.get_current_preset()
         return {
-            'voice': self.current_voice_label.text().replace("Voice: ", ""),
+            'voice': self.current_voice_label.text().replace("🎙 ", ""),
             'emotion_id': current_preset.id,
             'emotion_name': current_preset.display_name,
             'emotion_instruct': current_preset.instruct,
@@ -2245,7 +2256,7 @@ class MainWindow(QMainWindow):
         """
         # Update current values
         self.ui_state.last_text_input = self.text_input.toPlainText()
-        self.ui_state.selected_voice = self.current_voice_label.text().replace("Voice: ", "")
+        self.ui_state.selected_voice = self.current_voice_label.text().replace("🎙 ", "")
         # Store emotion preset index for persistence
         current_preset = self.emotion_button_group.get_current_preset()
         preset_list = list(EmotionPreset)

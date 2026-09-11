@@ -507,3 +507,52 @@ QSpinBox, QDoubleSpinBox {
 QSpinBox:focus, QDoubleSpinBox:focus {
     border-color: #2f81f7;
 }
+
+/* ─── VOICE PICKER BUTTON ────────────────────────────────── */
+QPushButton[objectName="voice_picker_button"] {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 0 10px;
+    color: #c9d1d9;
+    font-size: 10pt;
+    font-weight: 500;
+    min-height: 30px;
+    max-height: 30px;
+    text-align: left;
+}
+
+QPushButton[objectName="voice_picker_button"]:hover {
+    background-color: #21262d;
+    border-color: #484f58;
+    color: #e6edf3;
+}
+
+QPushButton[objectName="voice_picker_button"]:pressed {
+    background-color: #2f81f7;
+    border-color: #2f81f7;
+    color: white;
+}
+
+/* ─── CLONE VOICE BUTTON ─────────────────────────────────── */
+QPushButton[objectName="clone_voice_button"] {
+    background-color: rgba(46, 160, 67, 0.12);
+    border: 1px solid rgba(46, 160, 67, 0.4);
+    border-radius: 8px;
+    padding: 0 12px;
+    color: #3fb950;
+    font-size: 9pt;
+    font-weight: 600;
+    min-height: 30px;
+    max-height: 30px;
+}
+
+QPushButton[objectName="clone_voice_button"]:hover {
+    background-color: rgba(46, 160, 67, 0.22);
+    border-color: #3fb950;
+    color: #56d364;
+}
+
+QPushButton[objectName="clone_voice_button"]:pressed {
+    background-color: rgba(46, 160, 67, 0.35);
+}
