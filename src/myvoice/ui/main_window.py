@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
     # nullable file_path. Forwarded to MyVoiceApp._on_clear_comms_test_playback_requested.
     clear_comms_test_playback_requested = pyqtSignal(str, object, bool)
     cancel_generation_requested = pyqtSignal()  # Story 11.4 follow-up: Clear button doubles as Stop during generation
+    auto_reply_toggled = pyqtSignal(bool)  # Emitted when Auto Reply AI mode is toggled (True/False)
     # Microphone control signals
     mic_mute_toggled = pyqtSignal(bool)  # is_muted
     mic_volume_changed = pyqtSignal(float)  # volume 0.0-1.0
@@ -385,6 +386,15 @@ class MainWindow(QMainWindow):
         self.clone_voice_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clone_voice_button.clicked.connect(self._on_settings_clicked)
         emotion_voice_layout.addWidget(self.clone_voice_button)
+
+        # Auto-Reply AI Call Mode toggle button
+        self.auto_reply_button = QPushButton("🤖 Auto")
+        self.auto_reply_button.setObjectName("auto_reply_button")
+        self.auto_reply_button.setCheckable(True)
+        self.auto_reply_button.setToolTip("Toggle AI Auto-Reply mode for live calls & Discord VC")
+        self.auto_reply_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.auto_reply_button.toggled.connect(self._on_auto_reply_toggled)
+        emotion_voice_layout.addWidget(self.auto_reply_button)
 
         # Settings button with Qt standard icon
         self.settings_button = QPushButton()
@@ -1255,6 +1265,32 @@ class MainWindow(QMainWindow):
 
         # Emit signal for actual TTS processing (when service is connected)
         self.text_generate_requested.emit(text)
+
+    def _on_auto_reply_toggled(self, checked: bool) -> None:
+        """Handle auto-reply mode button toggle."""
+        self.auto_reply_toggled.emit(checked)
+        if checked:
+            self.auto_reply_button.setText("🤖 Auto ON")
+            self.status_bar.showMessage("🤖 Auto-Reply AI Mode engaged (Listening...)", 3000)
+        else:
+            self.auto_reply_button.setText("🤖 Auto")
+            self.status_bar.showMessage("Auto-Reply Mode stopped", 2000)
+
+    def set_auto_reply_status(self, status_key: str, message: str) -> None:
+        """Update UI elements based on AutoReplyService status."""
+        self.status_bar.showMessage(message)
+        if status_key in ("active", "listening", "hearing", "thinking", "speaking"):
+            if not self.auto_reply_button.isChecked():
+                self.auto_reply_button.blockSignals(True)
+                self.auto_reply_button.setChecked(True)
+                self.auto_reply_button.setText("🤖 Auto ON")
+                self.auto_reply_button.blockSignals(False)
+        elif status_key in ("stopped", "error"):
+            if self.auto_reply_button.isChecked():
+                self.auto_reply_button.blockSignals(True)
+                self.auto_reply_button.setChecked(False)
+                self.auto_reply_button.setText("🤖 Auto")
+                self.auto_reply_button.blockSignals(False)
 
 
 

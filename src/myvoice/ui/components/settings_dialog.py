@@ -30,6 +30,7 @@ from myvoice.ui.dialogs.settings import (
     ClearCommsSettingsPanel,  # Story 15.3
     StreamingSettingsPanel,  # Story 16.6
     APIAccessSettingsPanel,  # Local TTS API
+    AutoReplySettingsPanel,  # Auto-Reply AI Call mode
 )
 from myvoice.ui.dialogs.voice_design_studio import VoiceDesignStudioDialog
 from myvoice.services.quick_speak_service import QuickSpeakService
@@ -181,6 +182,9 @@ class SettingsDialog(QDialog):
 
         # Local TTS API settings tab (OpenAI-compatible localhost server).
         self._create_api_access_tab()
+
+        # Auto-Reply AI Call mode settings tab
+        self._create_auto_reply_tab()
 
         layout.addWidget(self.tab_widget)
 
@@ -797,6 +801,13 @@ class SettingsDialog(QDialog):
         )
         self.tab_widget.addTab(self.api_access_panel, "API Access")
 
+    def _create_auto_reply_tab(self):
+        """Create the Auto-Reply AI Call mode settings tab."""
+        self.auto_reply_panel = AutoReplySettingsPanel(
+            app_settings=self.current_settings, parent=self
+        )
+        self.tab_widget.addTab(self.auto_reply_panel, "Auto Reply (AI)")
+
     def _mark_settings_modified(self):
         """Mark settings as modified (for future save tracking)."""
         # Currently settings are applied on OK, but this could be used
@@ -870,6 +881,9 @@ class SettingsDialog(QDialog):
 
             # Local TTS API: hydrate enable/port/key from current_settings.
             self.api_access_panel.load_state(self.current_settings)
+
+            # Auto-Reply AI settings
+            self.auto_reply_panel.load_state(self.current_settings)
 
             self.logger.debug("Loaded current settings into UI")
 
@@ -988,6 +1002,9 @@ class SettingsDialog(QDialog):
 
             # Local TTS API: read enable/port/key into current_settings.
             self.api_access_panel.save_state(self.current_settings)
+
+            # Auto-Reply AI settings
+            self.auto_reply_panel.save_state(self.current_settings)
 
             self.logger.debug("Saved UI values to current settings")
 

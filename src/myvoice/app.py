@@ -678,6 +678,20 @@ class MyVoiceApp(QObject):
             # See _initialize_whisper_service_on_demand method
             self._whisper_service = None
 
+            # Auto-Reply AI Call Service
+            try:
+                from myvoice.services.auto_reply_service import AutoReplyService
+                self._auto_reply_service = AutoReplyService(
+                    settings=getattr(self, '_app_settings', None),
+                    tts_callback=self._on_text_generate_requested,
+                    parent=self,
+                )
+                self.register_service("auto_reply", self._auto_reply_service)
+                self.logger.info("AutoReplyService initialized successfully")
+            except Exception as e:
+                self._auto_reply_service = None
+                self.logger.warning(f"Failed to initialize AutoReplyService: {e}")
+
             self.logger.debug("Services initialization completed successfully")
             return True
 
@@ -742,6 +756,10 @@ class MyVoiceApp(QObject):
             self._main_window.whisper_init_requested.connect(self._on_whisper_init_requested)  # QA4
             self._main_window.mic_device_refresh_requested.connect(self._on_mic_device_refresh_requested)
             self._main_window.mic_monitor_toggled.connect(self._on_mic_monitor_toggled)
+            self._main_window.auto_reply_toggled.connect(self._on_auto_reply_toggled)
+
+            if hasattr(self, '_auto_reply_service') and self._auto_reply_service:
+                self._auto_reply_service.status_changed.connect(self._main_window.set_auto_reply_status)
 
             # Connect TTS service to main window and update status
             # This must happen here since _on_tts_service_started's 100ms timer fires
@@ -1231,6 +1249,9 @@ class MyVoiceApp(QObject):
             # Update main window status
             if self._main_window:
                 self._main_window.set_generation_status("Generating speech...", True)
+
+            if hasattr(self, '_auto_reply_service') and self._auto_reply_service:
+                self._auto_reply_service.set_speaking_state(True)
 
             # Check if TTS service is available
             if not hasattr(self, '_tts_service') or not self._tts_service.is_running():
@@ -3963,6 +3984,9 @@ class MyVoiceApp(QObject):
                 Qt.ConnectionType.QueuedConnection,
             )
 
+        if hasattr(self, '_auto_reply_service') and self._auto_reply_service:
+            self._auto_reply_service.set_speaking_state(False)
+
         if self._main_window:
             # Story 12.1: legacy substate path; registry-driven path now coexists
             self._main_window.set_playback_active(False)
@@ -4453,8 +4477,21 @@ class MyVoiceApp(QObject):
                 on_error=lambda error: self.logger.error(f"Failed to apply local TTS API settings: {error}")
             )
 
+            # Auto-Reply AI Call service settings update
+            if hasattr(self, '_auto_reply_service') and self._auto_reply_service:
+                self._auto_reply_service.update_settings(new_settings)
+
         except Exception as e:
             self.logger.error(f"Error handling settings changes: {e}")
+
+    def _on_auto_reply_toggled(self, checked: bool) -> None:
+        """Handle auto-reply mode toggle from the main window."""
+        self.logger.info(f"Auto-reply toggle requested: {checked}")
+        if hasattr(self, '_auto_reply_service') and self._auto_reply_service:
+            if checked:
+                self._auto_reply_service.start()
+            else:
+                self._auto_reply_service.stop()
 
     def _on_device_refresh_requested(self):
         """Handle device refresh request from the UI."""

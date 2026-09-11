@@ -21,6 +21,7 @@ Whether you're looking to generate expressive character voices or instantly clon
 ## ✨ Key Features
 
 - **⚡ Instant Streaming Inference**: Uses Flash-Attention and `torch.compile` Triton kernels to deliver sub-second generation times. Type and talk instantly.
+- **🤖 AI Auto-Reply Mode (Calls & Discord VC)**: Automatically listens to incoming caller audio via Voice Activity Detection, transcribes with Whisper, prompts an LLM (LiteLLM / OpenAI / Gemini / Ollama / OpenCode), and speaks the AI response in real-time.
 - **🎭 Controllable Emotions**: Generate speech with dynamic emotion tags (Happy, Angry, Sad, Flirtatious). *Note: Supported natively via the UI on VoiceDesign profiles.*
 - **🗣️ Zero-Shot Voice Cloning**: Upload a 5-second clean audio sample and perfectly clone any voice.
 - **🎙️ Seamless Virtual Mic Routing**: Routes audio directly to PulseAudio / PipeWire virtual sinks to effortlessly pipe AI voices into Discord, OBS, or Zoom.

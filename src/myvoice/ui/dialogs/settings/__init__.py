@@ -15,6 +15,7 @@ from .clear_comms_settings_panel import (
 )
 from .streaming_settings_panel import StreamingSettingsPanel
 from .api_access_settings_panel import APIAccessSettingsPanel
+from .auto_reply_settings_panel import AutoReplySettingsPanel
 
 __all__ = [
     "ClearCommsSettingsPanel",
@@ -25,4 +26,5 @@ __all__ = [
     "load_preloaded_audio_source",
     "StreamingSettingsPanel",
     "APIAccessSettingsPanel",
+    "AutoReplySettingsPanel",
 ]

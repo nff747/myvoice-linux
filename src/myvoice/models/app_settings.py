@@ -155,6 +155,16 @@ class AppSettings:
     http_api_port: int = 7778
     http_api_key: str = ""
 
+    # Auto-Reply AI Mode settings
+    auto_reply_enabled: bool = False
+    auto_reply_greeting: str = "This call is now set to automated AI mode."
+    auto_reply_system_prompt: str = "You are an AI assistant speaking in a live voice call. Respond naturally, conversationally, concisely (1-2 sentences), and directly to what the other person said."
+    auto_reply_api_url: str = "http://localhost:4000/v1"
+    auto_reply_api_key: str = "sk-aira-master-key"
+    auto_reply_model: str = "gemini-3.5-flash"
+    auto_reply_silence_duration: float = 1.5
+    auto_reply_energy_threshold: float = 0.02
+
     # Advanced settings
     advanced_settings: Dict[str, Any] = field(default_factory=dict)
 
@@ -622,6 +632,14 @@ class AppSettings:
                 "enable_http_api": self.enable_http_api,
                 "http_api_port": self.http_api_port,
                 "http_api_key": self.http_api_key,
+                "auto_reply_enabled": self.auto_reply_enabled,
+                "auto_reply_greeting": self.auto_reply_greeting,
+                "auto_reply_system_prompt": self.auto_reply_system_prompt,
+                "auto_reply_api_url": self.auto_reply_api_url,
+                "auto_reply_api_key": self.auto_reply_api_key,
+                "auto_reply_model": self.auto_reply_model,
+                "auto_reply_silence_duration": self.auto_reply_silence_duration,
+                "auto_reply_energy_threshold": self.auto_reply_energy_threshold,
                 "advanced_settings": self.advanced_settings.copy(),
                 "training_enabled": self.training_enabled,
                 "training_workspace_directory": self.training_workspace_directory,
@@ -693,6 +711,17 @@ class AppSettings:
                 enable_http_api=data.get("enable_http_api", False),
                 http_api_port=data.get("http_api_port", 7778),
                 http_api_key=data.get("http_api_key", ""),
+                auto_reply_enabled=data.get("auto_reply_enabled", False),
+                auto_reply_greeting=data.get("auto_reply_greeting", "This call is now set to automated AI mode."),
+                auto_reply_system_prompt=data.get(
+                    "auto_reply_system_prompt",
+                    "You are an AI assistant speaking in a live voice call. Respond naturally, conversationally, concisely (1-2 sentences), and directly to what the other person said."
+                ),
+                auto_reply_api_url=data.get("auto_reply_api_url", "http://localhost:4000/v1"),
+                auto_reply_api_key=data.get("auto_reply_api_key", "sk-aira-master-key"),
+                auto_reply_model=data.get("auto_reply_model", "gemini-3.5-flash"),
+                auto_reply_silence_duration=data.get("auto_reply_silence_duration", 1.5),
+                auto_reply_energy_threshold=data.get("auto_reply_energy_threshold", 0.02),
                 advanced_settings=data.get("advanced_settings", {}),
                 training_enabled=data.get("training_enabled", True),
                 training_workspace_directory=data.get("training_workspace_directory", "training_workspace"),
