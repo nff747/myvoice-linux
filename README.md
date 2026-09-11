@@ -55,17 +55,11 @@ This repository is an **open-source, Linux-first reimagining** of MyVoice. While
 git clone https://github.com/nff747/myvoice-linux.git
 cd myvoice-linux
 
-# 2. Create Python virtual environment
-uv venv
+# 2. Run the one-click installer
+./install.sh
 
-# 3. Install core dependencies
-uv pip install -r requirements.txt
-
-# 4. Install CUDA-accelerated PyTorch
-uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-
-# 5. Run MyVoice!
-./run_myvoice.sh
+# 3. Launch from anywhere!
+myvoice
 ```
 
 *(Note: The very first generation will take 1–3 minutes while PyTorch compiles the GPU kernels for your hardware. All subsequent generations will be instantaneous.)*
