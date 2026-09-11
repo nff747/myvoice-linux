@@ -1,0 +1,278 @@
+# generated: 2026-05-03
+# project: MyVoice V2 (Optimization Pass)
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+# scope: optimization-pass (V2 baseline + VoiceDesign archived to planning-artifacts/_archive/)
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+#
+# SEQUENCING (from architecture-optimization-pass.md D-20):
+# ========================================================
+# - Epics 11-15 must land in order (Foundation → Indicator → Queue → Save → Clear Comms)
+# - Epic 16 (Streaming) is independent — can land before, between, or after any of 11-15
+# - Within each epic, stories are numbered in implementation order
+
+generated: 2026-05-03
+project: MyVoice V2 (Optimization Pass)
+project_key: NOKEY
+tracking_system: file-system
+story_location: "_bmad-output/implementation-artifacts"
+
+development_status:
+  # Epic 11 — Session Foundation (Phase 1) — net-zero behavior change
+  epic-11: done
+  11-1-generation-session-state-machine: done
+  11-2-session-registry-with-qt-thread-ownership: done
+  11-3-observability-metrics-helper: done
+  11-4-qwenttsservice-integration-with-sessionregistry: done
+  epic-11-retrospective: done
+
+  # Epic 12 — Indicator State Truth (Phase 2 — OFR-D)
+  epic-12: in-progress
+  12-1-servicestatusindicator-rewire-to-single-signal-source: done
+  12-2-focal-session-property-and-current-session-changed-signal: done
+  12-3-indicator-ui-test-suite-migration: done
+  epic-12-retrospective: optional
+
+  # Epic 13 — Playback Queue (Phase 3 — OFR-C)
+  epic-13: done
+  13-1-playbackqueue-with-fifo-ordering-and-depth-signal: done
+  13-2-audiocoordinator-integration-with-playbackqueue: done
+  13-3-playback-last-preservation-validation: done
+  13-4-queue-depth-indicator-badge: done
+  epic-13-retrospective: done
+
+  # Epic 14 — Save Generation (Phase 4 — OFR-A)
+  epic-14: done
+  14-1-saveable-session-lifecycle-policy: done
+  14-2-save-button-with-enablement-signal: done
+  14-3-save-dialog-with-wav-writer-and-save-during-streaming-flow: done
+  epic-14-retrospective: optional
+
+  # Epic 15 — Clear Comms (Phase 5 — OFR-B)
+  epic-15: in-progress
+  15-1-preloaded-source-audio-loader: done
+  15-2-clear-comms-button-with-interrupt-by-default: done
+  15-3-clear-comms-settings-panel: done
+  epic-15-retrospective: done
+
+  # Epic 16 — True Streaming TTS (Phase ⊥ — independent track)
+  epic-16: done
+  16-1-qwen-tts-dependency-pin-and-import-attribute-test: done
+  16-2-streaming-mode-enum-and-hardware-probe: done
+  16-3-codectokenstreamer-with-bounded-queue: done
+  16-4-streaming-decoder-worker-with-overlap-add: done
+  16-5-cooperative-cancellation-chain: done
+  16-6-true-stream-dispatch-and-three-mode-fallback-chain: done
+  16-7-empirical-validation-gates-for-streaming-default: done
+  16-8-true-stream-real-wire-up: done
+  16-9-nfr1-reconciliation-sentence-stream-latency-investigation: done
+  epic-16-retrospective: done
+
+  # Epic 17 — Streaming Default Ramp (Phase ⊥-Ramp + Phase ⊥-Polish)
+  # Added 2026-05-08 per Epic 16 retrospective's explicit handoff (epic-16-retro-2026-05-08.md §"Significant Discoveries").
+  # Originally a single-story epic (17.1 closes Story 16.7 AC #2's deferred multi-listener perceptual A/B audition).
+  # Re-opened 2026-05-08 per Story tooling-2 closure: discovered TRUE_STREAM voice_clone_prompt
+  # regression for CLONED voices in bundled UI flow (tooling-2-build-tools-audit-evidence.md §7.2).
+  # Story 17.2 precomputes the embedding lazily on first use and persists to <voice>.pt — closes
+  # the Phase ⊥-Ramp user-reach gap (Story 17.1 certified TRUE_STREAM; 17.2 makes it actually
+  # reach CLONED-voice users at install time).
+  # Re-opened 2026-05-08 (third iteration) per Story 17.2 install-mode smoke: TRUE_STREAM
+  # dispatch reaches users but audio playback fires AFTER generation completes (chunks
+  # accumulate in QwenTTSResponse.audio_data and play as one batch). Story 17.3 wires
+  # progressive chunk playback so audio is audible at first-chunk-emit time. Phase ⊥-Polish.
+  epic-17: in-progress
+  17-1-streaming-default-ramp: done
+  17-2-cloned-voice-truestream-prompt-precompute: done
+  17-3-progressive-audio-playback-during-true-stream: done
+  epic-17-retrospective: optional
+
+  # Epic 18 — Generation-Speed Optimizations (Phase ⊥-Polish-2 + Phase ⊥-Polish-2-Ship)
+  # Added 2026-05-09 — Epic was fully scoped in `epics-optimization-pass.md` (line 228 +
+  # stories at line 1322) but never registered in sprint-status.yaml. Logged retroactively
+  # so create-story / sprint-status workflows pick it up. Phase ⊥-Polish-2 of D-20;
+  # successor to Phase ⊥-Polish (Story 17.3). Independent of Epics 11–15; depends only on
+  # Epic 16 (TRUE_STREAM dispatch path) + Story 17.3 (progressive playback) — both done.
+  # Recommended sequencing: 18.1 + 18.2 in either order or parallel; 18.3 third (settles
+  # precision question); 18.4 last (compiles whatever precision 18.3 selected). 18.3 + 18.4
+  # may amortize a single NFR3 audition if shipped close together.
+  #
+  # Re-opened 2026-05-11 (done → in-progress) per Story 18.4 closure handoff
+  # (`_bmad-output/handoff-2026-05-11.md`) + `memory/build_tools_phase_perp_state.md` HIGH
+  # follow-up: Story 18.4 shipped with `AppSettings.tts_compile="off"` because the
+  # production bundle is missing CUDA Toolkit + Python 3.10.11 headers/libs +
+  # triton-windows. Story 18.5 (Phase ⊥-Polish-2-Ship) bundles those three components so
+  # users can flip the default back to `"auto"` and reach the source-tree compile machinery
+  # Stories 18.2 + 18.3 + 18.4 collectively landed. Audition pre-cleared by Story 18.4's
+  # joint A/B (FULL PASS 2026-05-11); 18.5 is a packaging+default-flip story, not a
+  # perceptual story.
+  epic-18: done
+  18-1-underrun-gap-mitigation: done
+  18-2-tf32-cudnn-benchmark-enable: done
+  18-3-bf16-precision-on-talker-decoder: done
+  18-4-torch-compile-decoder-persistent-cache: done
+  18-5-cuda-toolkit-triton-bundling: done
+  epic-18-retrospective: done
+
+  # Epic 20 — First-Audio Latency (Phase ⊥-Polish-3)
+  # Added 2026-08-31 from Mary's TTFA research memo
+  # (`planning-artifacts/research/technical-qwen3-tts-ttfa-optimization-2026-08-31.md`).
+  # Epic 18 closed the PRODUCER-BOTTLENECK question (emit/drain 3.23x -> 0.670x). It did NOT
+  # close the TIME-TO-FIRST-AUDIO question: Story 18.4 measured compile at -7.46% on
+  # first_chunk_latency_ms because `compile_talker=False` (Story 16.8 forward-hook
+  # incompatibility) leaves the talker eager, and TTFA is talker-bound. Median TTFA is
+  # ~5,929 ms on RTX 5090 at the shipping config.
+  # Third-party evidence (andimarafioti/faster-qwen3-tts, MIT, same 12Hz model family,
+  # single-stream, RTX 4090) reports 4.1x RTF / 3.0x TTFA via torch.cuda.CUDAGraph +
+  # StaticCache, and independently reproduces our torch.compile null result
+  # ("dynamic KV-cache shapes defeat the compiler").
+  # Story 20.1 is a SPIKE — evidence + routed ADOPT/PORT/REJECT verdict, zero production
+  # behavior change. Gates the Epic 20 architecture pass so Winston scopes against measured
+  # 1.7B numbers rather than a published 0.6B table on different hardware.
+  # Epic 19 remains RESERVED for the architected-but-unregistered Lightning Tier scope
+  # (`architecture-streaming-acceleration-and-lightning-tier.md`) — do not reuse the number.
+  # Winston architecture pre-read 2026-08-31: 3 amendments applied. D-25 re-graded to
+  # non-issue (assertion never fires from the production call path); PORT split into
+  # PORT-a (vendor) / PORT-b (build); AC #2b added so the decomposition covers the
+  # product's worst case (short utterances + sub-16GiB adaptive-pre-buffer hosts), not
+  # only the 5090 long-form best case. Story remains ready-for-dev.
+  # 2026-08-31: RTX 3060 not reachable near-term (second PC, no hot-swap), so AC #2b is
+  # three-phased - 5090 cells + a DERIVED break-even producer rate close Gate B now;
+  # the 3060 confirmation is deferred and needs only Story 18.1's already-shipped
+  # env-var CSV capture (no new build). Gate B is not hardware-blocked.
+  epic-20: in-progress
+  20-1-ttfa-spike-faster-qwen3-tts: done
+  # Story 20.2 added 2026-08-31 from Story 20.1 evidence 6.4 Follow-up A - the largest
+  # single TTFA term (~3.96s in-process inductor reload handed to the user's first
+  # utterance on every launch, because warmup_compile_async primes only on a COLD cache).
+  # Sequenced first because it is independent: Follow-ups B (chunk_size) and C (adaptive
+  # cushion) are coupled to each other and ship together in a later story.
+  20-2-warm-path-compile-priming: done
+  # Story 20.3 added 2026-08-31. Story 20.2 measured the win but found it unreachable:
+  # (1) warmup_compile_async is scheduled at app.py:594 while the first await in that
+  #     coroutine is the preload at :613, so it always exits at no_model_loaded;
+  # (2) priming hard-codes CUSTOM_VOICE while the cache key is computed from the LOADED
+  #     model, so mark_warm can mark a key for a model never compiled.
+  # Commander 2026-08-31: BASE is the default resident model (typical user loads their
+  # usual cloned voice), so priming targets BASE + the Story 17.2 cached clone prompt.
+  # Central invariant: priming must NEVER switch models - evicting the user's model
+  # would cost a reload on their first generation, inverting the epic's purpose.
+  # 2026-08-31: AC #1/#2/#3/#5 implemented and verified (12/12 mutations caught, zero new
+  # regression failures). AC #4's through-the-GUI measurement is still open — it needs >=5
+  # interactive launches with a cloned voice active; procedure + comparison baseline are in
+  # 20-3-prime-the-resident-model-evidence.md section 4.
+  20-3-prime-the-resident-model: done
+  # Story 20.4 added 2026-09-01 from Story 20.1 Follow-ups B + C, shipped as ONE story
+  # because 20.1 found them coupled: chunk_size=10 worsens the sub-16GiB
+  # cushion-to-talker ratio from 2.5x to 4.0x, since the talker shrinks while the 10s
+  # MAX_PRE_DELAY cap does not. B alone would speed up large-VRAM hosts and leave the
+  # RTX 30xx tier pinned at the cap.
+  # Carries the D-25 trap from 20.1 5.4: engage_compile_optimizations hard-codes
+  # streamer_chunk_size=25/lookahead=5 and model_registry.py:591 passes neither, so
+  # retuning the constant without threading real geometry silently violates the very
+  # invariant the assertion protects.
+  # First Epic 20 story to carry an NFR3 perceptual gate - chunk boundaries change for
+  # every generation, so chunk-stitching is in scope.
+  20-4-chunk-size-and-adaptive-cushion: done
+  # Story 20.5 added 2026-09-01. Story 20.4 closed the chunk-size question at cs25
+  # after four auditions and named codec state caching as the thing that would
+  # reopen it. Mary's research filed it as a THROUGHPUT item; 20.4 measured it as
+  # primarily a QUALITY one - the causal convs zero-pad their left edge
+  # (modeling_qwen3_tts_tokenizer_v2.py:189-192), which is the single cause of both
+  # the 555-sample fixed edge loss AND the ~35% cold-start decode error the current
+  # seam fix masks rather than removes.
+  # PHASE-GATED: Phase 1 is a bench spike with a hard go/no-go and zero src changes.
+  # The fork's decode_streaming looks like the answer and is not - it is a speed
+  # path carrying no state. This is ours to build.
+  # CLOSED 2026-09-01. Phase 1 GO on both thresholds. Phase 2 carries state per session
+  # via services/tts_streaming/codec_state_cache.py (a wrapper - no vendoring): edge loss
+  # 555 -> 0, head NRMSE 0.406 -> 0.0078, correlation 1.0000, lag jitter 0 on every seam,
+  # error-by-position flat. Two blinded NFR3 rounds. Round 1 MIXED - preferred 5-1 where
+  # the seam was exposed, but 2 single-seam rows blocked on the 64-sample consumer
+  # crossfade, which the Phase 2 evidence had already named with numbers BEFORE the round
+  # ran: with the cold start gone it is a 2.7ms comb on continuous audio. Phase 4 scoped
+  # that crossfade to discontinuous producers (SENTENCE_STREAM and the stateless fallback
+  # keep it; batch never reaches it). Round 2 UNANIMOUS PASS: 10-0-4, zero blocking.
+  # AC #5 is deliberately NOT met - it defers the chunk-size retune to its own story and
+  # no geometry was measured here. DEFAULT_CHUNK_SIZE is still 25.
+  # SEQUENCING for whoever picks up the follow-ups: the lookahead/trim removal (F1) must
+  # come BEFORE the chunk-size reopen (F2). The two-pass decode in codec_state_cache
+  # exists ONLY to serve the 5-frame lookahead, so the +7-10ms/chunk tax is the
+  # lookahead's, not state caching's - and it scales with chunk count, the exact variable
+  # F2 varies. F1 also gains 5 talker steps of TTFA on its own. Full list with costs:
+  # 20-5-codec-state-caching.md, 'Follow-ups - the canonical list'.
+  20-5-codec-state-caching: done
+  # Story 20.6 added 2026-09-01 as Story 20.5 follow-up F1, sequenced AHEAD of the
+  # chunk-size reopen (F2) because the two-pass decode tax scales with chunk count --
+  # exactly what F2 varies -- so shipping them together would recreate the
+  # two-variable confound that cost Story 20.4 its round-2 audition.
+  # Scope is dominated by AC #2: the lookahead + trim + seam blend are the ONLY seam
+  # handling the STATELESS fallback path has (kill switch MYVOICE_CODEC_STATE_CACHE,
+  # carries_codec_state=False). Retiring them globally would silently strip that path
+  # of every defence and reintroduce the artefact this epic spent six audition rounds
+  # eliminating -- on the path a user lands on when something has already gone wrong.
+  # Retirement must therefore be CONDITIONAL on carried state, by the same
+  # producer-declares/consumer-acts pattern 20.5 used for the crossfade.
+  20-6-retire-the-lookahead: done
+  # Story 20.7 added 2026-09-02. NOT on any follow-up list -- found by Story 20.6's
+  # telemetry, not by design review. Compile priming is a REAL generation and holds
+  # _request_semaphore, so a user pressing Generate during the ~4.4-4.9 s startup
+  # window queues silently behind it. Measured twice in the segment-1a dispatch
+  # interval: 840.2 ms and 1,382.6 ms against ~1.5-3.0 ms on the other 16 of 18
+  # captured generations, with nothing on screen to explain it.
+  # The 'Preparing TTS engine' indicator already exists and is advisory only; it was
+  # ignored twice by an operator who knew what it meant and had been warned in the
+  # launcher banner, so making it louder was considered and rejected.
+  # AC #2 is load-bearing: a Generate button that never comes back is strictly worse
+  # than the silent queue being fixed.
+  20-7-guard-generate-during-priming: ready-for-dev
+  # Story 20.8 added 2026-09-02 as follow-up F2, PHASE-GATED. Story 20.5 met the
+  # reopening condition 20.4 section 17 named, but every LATENCY number justifying
+  # F2 is stale for three separate reasons: 20.1's sweep predates codec state
+  # caching AND the lookahead retirement, and it ran with decode_window_frames
+  # pinned at 30 regardless of chunk_size (20.1 section 5.4) -- the exact trap 20.4's
+  # threading closed. On top of that 20.6 section 12 showed that session is not
+  # comparable to today at all (46.66 vs 38.25 ms/frame for the same geometry).
+  # Phase 1 is a headless one-sitting re-baseline with a hard go/no-go and ZERO
+  # audition time. Note the lever is now larger than the old curve implied -- with
+  # the lookahead retired, chunk_size=N first-emits at N frames, not N+5 -- but the
+  # sweep is no longer free: each point is a distinct compile-cache key.
+  20-8-chunk-size-reopen: ready-for-dev
+
+  # Out-of-epic UI work, following the tooling-N precedent for non-epic stories.
+  # Commander 2026-09-01: the X minimizes to tray and Settings/Interface has no
+  # toggle for it. AppSettings.minimize_to_tray already exists and is persisted;
+  # only the UI control is missing. Grounding the story surfaced a second defect:
+  # custom_title_bar.py:181 guards on hasattr(parent, '_minimize_to_tray'), which
+  # is always True, so the minimize button ALWAYS tray-minimizes and its
+  # showMinimized() branch is dead code. Shipping the toggle without that fix
+  # would give the user a control that appears not to work.
+  ui-1-close-to-tray-toggle: done

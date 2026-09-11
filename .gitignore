@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+logs/
+config/
+voice_files/
+*.log
+.DS_Store

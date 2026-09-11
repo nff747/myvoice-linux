@@ -1,0 +1,100 @@
+# MyVoice Application Dependencies
+# Python 3.10+ required
+
+# GUI Framework
+PyQt6>=6.6.0
+qasync>=0.27.0  # PyQt6 + asyncio integration
+
+# HTTP Client
+requests>=2.31.0
+
+# Local TTS API (OpenAI-compatible) — tech-spec local-tts-api-v1.
+# Settings-toggled localhost HTTP server exposing /v1/audio/speech over the
+# existing QwenTTSService. All pure wheels; no ffmpeg. uvicorn runs as a task
+# on the existing qasync loop (install_signal_handlers=False, reload=False).
+# lameenc provides the MP3 encoder (128 kbps); wav uses soundfile (already
+# in-tree), pcm is raw int16 passthrough.
+fastapi>=0.110.0
+uvicorn>=0.29.0
+lameenc>=1.7.0
+
+# OS trust store bridge for Python SSL — required so end-users running
+# SSL-scanning antivirus (Norton, Kaspersky, Avast, Bitdefender, ESET, ...)
+# or corporate MITM proxies don't hit SSLCertVerificationError on first
+# huggingface_hub call. Patches Python's SSL to consult the Windows cert
+# store where the AV's private root is trusted. See src/myvoice/main.py
+# header comment.
+truststore>=0.10.0
+
+# Speech Recognition
+openai-whisper>=20231117
+
+# ===============================================
+# Qwen3-TTS (Embedded TTS Engine)
+# ===============================================
+# NOTE: qwen-tts requires Python 3.9+ (3.10 confirmed working)
+# Models are downloaded on first use (~3.4GB per model)
+# Story 18.4 / D-22 Branch B (architecture-streaming-acceleration-and-lightning-tier.md
+# sealed 2026-05-10) — pin bumped from QwenLM/Qwen3-TTS@1ab0dd75 to community fork
+# dffdeeq/Qwen3-TTS-streaming@3fdb4682 to engage the upstream
+# `enable_streaming_optimizations()` API (introducing commit "compile and fast codebook",
+# 2026-02-03). Package name (`qwen-tts`) and version (0.0.4) are unchanged — drop-in
+# replacement at the import level. Fork diff is +50/-6 lines additive; no removed symbols.
+# Joint NFR3 ≥3-listener audition (Story 18.4 Task 9) certifies the swap.
+# Bumping further requires running tests/test_qwen_tts_internals.py first; do NOT
+# replace with the unpinned `pip install git+...` form, which would resolve to fork
+# HEAD and silently subvert the pin.
+qwen-tts @ git+https://github.com/dffdeeq/Qwen3-TTS-streaming.git@3fdb468233d73fa537202b94a1cc7c4e7a6160b8
+
+# Audio I/O for Qwen3-TTS
+soundfile>=0.12.1
+
+# ===============================================
+# Machine Learning / PyTorch
+# ===============================================
+# NOTE: torch >=2.0 required for qwen-tts compatibility
+# For GPU acceleration, install CUDA version separately:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# For CPU-only (smaller package):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
+numpy>=1.24.0
+
+# Story 18.5 — triton-windows is the Windows JIT compilation backend for
+# torch.compile + CUDA Graph replay on Ampere+ CUDA hosts (RTX 30xx/40xx/50xx).
+# Engages Story 18.4's `engage_compile_optimizations` source-tree machinery;
+# bundled into the production exe via myvoice.spec Block A so end-users don't
+# need a system-wide triton install. Hard-pin per OQ #3 default; pin bumps
+# require re-running the dev-env smokes (Story 18.5 Tasks 1.2 + 1.3).
+triton-windows>=3.6.0.post26; sys_platform == 'win32'
+
+# Audio Processing
+# PyAudioWPatch is preferred on Windows for better WASAPI support and Windows 11 compatibility
+# It includes WASAPI loopback, better device detection, and context manager support
+# Falls back to standard PyAudio if PyAudioWPatch is not available
+PyAudioWPatch>=0.2.12.6; sys_platform == 'win32'
+pyaudio>=0.2.13; sys_platform != 'win32'
+
+# Windows COM Support (Windows only)
+pywin32>=306; sys_platform == 'win32'
+
+# ===============================================
+# Dev-only test tooling
+# ===============================================
+# Story 12.3 added pytest-cov to enable the indicator-suite coverage gate (AC #6).
+# No formal dev-manifest exists in tree (no requirements-dev.txt, no pyproject.toml,
+# no [tool.pytest] block), so pytest-cov lives here behind a `# dev-only` comment
+# per Story 12.3's Open Question #1 default. Production builds use
+# build_tools/requirements-production.txt, which already excludes pytest-* per
+# its own comment block — so this entry will not be bundled into the
+# PyInstaller artifact. A future maintainer is welcome to normalize this into
+# a dedicated requirements-dev.txt; the choice is flagged in the Story 12.3
+# Change Log.
+#
+# WINDOWS NOTE: invoking pytest with `--cov=...` directly fails with
+# `OSError [WinError 1114]` because pytest-cov's tracer activates before
+# tests/conftest.py's torch-DLL preamble can fire. Use the wrapper script
+# `tools/run_cov.py` instead — it imports torch first then invokes
+# pytest.main(). Example:
+#   python tools/run_cov.py --cov=myvoice.ui.main_window tests/ui/test_status_indicators.py
+pytest-cov>=4.1  # dev-only — Story 12.3 indicator-suite coverage gate (AC #6); use tools/run_cov.py on Windows

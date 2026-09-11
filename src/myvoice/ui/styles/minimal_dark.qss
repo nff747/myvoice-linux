@@ -1,0 +1,144 @@
+/*
+Polished Modern Dark Theme for MyVoice
+*/
+
+/* Root styling */
+QWidget {
+    background-color: #0f172a;
+    color: #f8fafc;
+    font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+    font-size: 10pt;
+}
+
+/* Main window */
+QMainWindow {
+    background-color: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+}
+
+/* Custom Title Bar */
+QWidget[objectName="custom_title_bar"] {
+    background-color: #1e293b;
+    border-bottom: 1px solid #334155;
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+    min-height: 36px;
+    max-height: 36px;
+}
+
+QLabel[objectName="title_label"] {
+    color: #e2e8f0;
+    font-weight: 600;
+    font-size: 10pt;
+    padding-left: 12px;
+    background: transparent;
+}
+
+/* Control Buttons */
+QPushButton[objectName="minimize_button"],
+QPushButton[objectName="maximize_button"] {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    min-width: 36px;
+    max-width: 36px;
+    color: #94a3b8;
+}
+
+QPushButton[objectName="minimize_button"]:hover,
+QPushButton[objectName="maximize_button"]:hover {
+    background-color: #334155;
+    color: #f8fafc;
+}
+
+QPushButton[objectName="close_button"] {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    min-width: 36px;
+    max-width: 36px;
+    color: #94a3b8;
+}
+
+QPushButton[objectName="close_button"]:hover {
+    background-color: #ef4444;
+    color: white;
+}
+
+/* Text Input Area */
+QTextEdit {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 12px;
+    color: #f1f5f9;
+    font-size: 11pt;
+}
+
+QTextEdit:focus {
+    border: 1px solid #3b82f6;
+    background-color: #1e293b;
+}
+
+/* General Buttons */
+QPushButton {
+    background-color: #3b82f6;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background-color: #2563eb;
+}
+
+QPushButton:pressed {
+    background-color: #1d4ed8;
+}
+
+/* Emoji / Emotion Buttons */
+QPushButton[property="emoji_btn"] {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    font-size: 16pt;
+    padding: 6px;
+}
+
+QPushButton[property="emoji_btn"]:hover {
+    background-color: #334155;
+    border-color: #475569;
+}
+
+QPushButton[property="emoji_btn"]:checked {
+    background-color: rgba(59, 130, 246, 0.2);
+    border: 2px solid #3b82f6;
+}
+
+/* Status Bar */
+QStatusBar {
+    background-color: #0f172a;
+    color: #94a3b8;
+    border-top: 1px solid #1e293b;
+}
+
+/* Dropdowns / ComboBoxes */
+QComboBox {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #e2e8f0;
+}
+
+QComboBox:hover {
+    border-color: #475569;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}

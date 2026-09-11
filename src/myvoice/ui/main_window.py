@@ -1,0 +1,3184 @@
+"""
+MyVoice Main Window
+
+This module implements the primary MainWindow component with a compact design
+for desktop accessibility. Features always-on-top behavior and minimal footprint.
+"""
+
+import logging
+from pathlib import Path
+from typing import Optional
+
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QTextEdit, QLineEdit, QComboBox,
+    QSizePolicy, QStatusBar, QSystemTrayIcon, QMenu
+)
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer, QEvent
+from PyQt6.QtGui import QIcon, QFont, QCloseEvent, QKeyEvent, QShowEvent
+
+# QAccessibleEvent may not be available in all PyQt6 versions
+try:
+    from PyQt6.QtGui import QAccessibleEvent, QAccessible
+    ACCESSIBILITY_AVAILABLE = True
+except ImportError:
+    ACCESSIBILITY_AVAILABLE = False
+
+from myvoice.ui.styles.theme_manager import get_theme_manager
+from myvoice.ui.components.clear_comms_button import ClearCommsButton
+from myvoice.ui.components.queue_depth_badge import QueueDepthBadge
+from myvoice.ui.components.save_button import SaveButton
+from myvoice.ui.components.service_status_indicator import ServiceStatusBar, ServiceStatusIndicator
+from myvoice.ui.components.settings_dialog import SettingsDialog
+from myvoice.ui.components.virtual_mic_setup_dialog import VirtualMicSetupDialog
+from myvoice.ui.dialogs.voice_design_studio import VoiceDesignStudioDialog
+from myvoice.ui.components.custom_title_bar import CustomTitleBar
+from myvoice.ui.components.resize_grip import SideGrip, CornerGrip
+from myvoice.ui.components.quick_speak_dialog import QuickSpeakDialog
+from myvoice.ui.components.quick_speak_menu import QuickSpeakMenu
+from myvoice.ui.components.emotion_button_group import EmotionButtonGroup, EmotionPreset
+from myvoice.ui.components.mic_control_widget import MicControlWidget
+from myvoice.models.ui_state import UIState, ServiceStatusInfo, ServiceHealthStatus
+from myvoice.models.app_settings import AppSettings
+from myvoice.services.quick_speak_service import QuickSpeakService
+from myvoice.services.sessions.session_registry import SessionRegistry, _FOCAL_DECAY_SECONDS
+from myvoice.services.sessions.generation_session import SessionState
+
+# AI-Review M3 (Story 12.3): focal-decay timer headroom in milliseconds. The
+# UI-side timer fires `_FOCAL_DECAY_SECONDS` plus a small safety margin after
+# a terminal transition so it observes `focal_session_id == None` rather than
+# racing the registry's exact decay boundary. Derived (rather than hard-coded)
+# so a future change to the registry's decay window propagates here without
+# silent drift.
+_FOCAL_DECAY_TIMER_HEADROOM_MS = 50
+_FOCAL_DECAY_TIMER_INTERVAL_MS = int(_FOCAL_DECAY_SECONDS * 1000) + _FOCAL_DECAY_TIMER_HEADROOM_MS
+
+
+class MainWindow(QMainWindow):
+    """
+    Main application window with compact design and always-on-top behavior.
+
+    This window provides the primary interface for the MyVoice TTS application,
+    featuring a minimal footprint suitable for desktop accessibility.
+
+    Signals:
+        text_generate_requested: Emitted when user requests TTS generation
+        voice_changed: Emitted when user changes voice selection
+        settings_requested: Emitted when user opens settings
+    """
+
+    # Signals for application communication
+    text_generate_requested = pyqtSignal(str)  # text to generate
+    voice_changed = pyqtSignal(str)  # voice profile name
+    settings_requested = pyqtSignal()
+    service_status_clicked = pyqtSignal(str)  # service name
+    settings_changed = pyqtSignal(AppSettings)  # new settings
+    audio_device_refresh_requested = pyqtSignal()
+    audio_device_test_requested = pyqtSignal(str)  # device_id
+    whisper_init_requested = pyqtSignal()  # QA4: Request whisper service initialization
+    virtual_device_test_requested = pyqtSignal(str)  # device_id
+    voice_directory_changed = pyqtSignal(str)  # new_directory_path
+    voice_refresh_requested = pyqtSignal()  # voice profile refresh
+    voice_transcription_requested = pyqtSignal(str)  # voice_profile_name - transcription requested
+    replay_last_requested = pyqtSignal()  # Story 2.4: Replay last generated audio (FR28)
+    save_requested = pyqtSignal()  # Story 14.2: Save current saveable session (Story 14.3 wires the dialog)
+    clear_comms_requested = pyqtSignal()  # Story 15.2: Clear Comms button click — interrupt + replay configured source
+    # Story 15.3: Test Playback request from the Clear Comms settings panel.
+    # Payload: (source_kind, file_path, queue_mode); object slot for the
+    # nullable file_path. Forwarded to MyVoiceApp._on_clear_comms_test_playback_requested.
+    clear_comms_test_playback_requested = pyqtSignal(str, object, bool)
+    cancel_generation_requested = pyqtSignal()  # Story 11.4 follow-up: Clear button doubles as Stop during generation
+    # Microphone control signals
+    mic_mute_toggled = pyqtSignal(bool)  # is_muted
+    mic_volume_changed = pyqtSignal(float)  # volume 0.0-1.0
+    mic_device_refresh_requested = pyqtSignal()  # Request mic input device enumeration
+    mic_monitor_toggled = pyqtSignal(bool, str)  # (enabled, device_id) - Monitor mic to speakers
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        session_registry: Optional[SessionRegistry] = None,
+    ):
+        """
+        Initialize the main window with compact design.
+
+        Args:
+            parent: Parent widget (optional)
+            session_registry: Optional SessionRegistry for Story 12.1 indicator
+                wiring. When None, the legacy callback chain (set_generation_*,
+                set_playback_active) drives the indicator unchanged so unit
+                tests that instantiate MainWindow without a full app still
+                pass.
+        """
+        super().__init__(parent)
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        # Story 12.1: SessionRegistry wiring (D-20 Phase 2). When wired, the
+        # TTS indicator's substate is driven by SessionRegistry signals; the
+        # legacy methods (`set_generation_pulsing`, `set_playback_active`)
+        # short-circuit to no-ops so the registry path is the single source
+        # of truth for generation/playback substate (AC #1, AC #2).
+        self._session_registry: Optional[SessionRegistry] = session_registry
+        if self._session_registry is not None:
+            self.logger.info("MainWindow using SessionRegistry for TTS indicator substate")
+        # Story 12.1 Task 2.5: 5-second focal-decay timer that lets the UI
+        # observe the registry's time-based focal decay (the registry does
+        # not emit on decay; AC #4 case (b)).
+        self._focal_decay_timer: Optional[QTimer] = None
+        # Story 13.4: ``self._queue_depth_badge`` (a ``QueueDepthBadge``) is
+        # created in ``_create_ui`` and consumed by
+        # ``_on_playback_queue_depth_changed``. Construction precedes the
+        # registry connection in ``_connect_registry_to_indicator``, so the
+        # attribute always exists by the time the slot fires.
+
+        # Theme manager
+        self.theme_manager = get_theme_manager()
+
+        # UI State management
+        self.ui_state = UIState()
+
+        # Voice manager reference (will be set by application)
+        self.voice_manager = None
+
+        # Audio manager and settings references (will be set by application)
+        self.audio_coordinator = None
+        self.app_settings = None
+
+        # Settings dialog
+        self.settings_dialog = None
+
+        # Voice Design Studio dialog (Story 1.2)
+        self.voice_design_studio_dialog = None
+
+        # Quick Speak service, menu, and dialog
+        self.quick_speak_service = None
+        self.quick_speak_menu = None  # Story 5.2: Popup menu for quick access
+        self.quick_speak_dialog = None  # Full dialog for empty state navigation
+
+        # TTS service availability tracking
+        self._tts_available = False
+
+        # Story 11.4 follow-up: track generation in-flight so the Clear
+        # button can double as a Stop button. Updated by
+        # ``set_generation_status``; consulted by ``_on_clear_clicked``.
+        self._is_generating = False
+
+        # Story 20.7: track startup compile priming, which holds the TTS
+        # service's single ``_request_semaphore`` slot. Generate must be
+        # gated while it does, or the press queues silently behind it.
+        # Updated by ``set_engine_priming``; consulted only by
+        # ``_refresh_generate_enabled``.
+        self._is_priming = False
+
+        # Story 11.4 follow-up: track playback in-flight so the Stop mode
+        # extends through audio playback (not just generation). Updated by
+        # ``set_playback_active``.
+        self._is_playing = False
+
+        # Story 11.4 follow-up: snapshot of the text input at Generate-
+        # click time, restored if the user hits Stop. Without this the
+        # text is gone the moment Generate fires (see ``_on_generate_
+        # clicked``) and Stop has nothing to give back.
+        self._last_generation_text: str = ""
+
+        # Story 15.2: cached snapshot of the Clear Comms config used to
+        # drive the ClearCommsButton's enablement matrix. Defaults
+        # mirror ``AppSettings`` defaults so the button reflects truth
+        # before ``set_clear_comms_config_snapshot(...)`` is first
+        # called from ``_create_ui``.
+        self._clear_comms_source_kind: str = "last_generation"
+        self._clear_comms_file_path: Optional[str] = None
+        self._clear_comms_file_path_valid: bool = False
+        self._clear_comms_queue_mode: bool = False
+
+        # TTS service reference (will be set by application for voice creation dialogs)
+        self.tts_service = None
+
+        # Whisper service reference for transcription (QA3 fix)
+        self.whisper_service = None
+
+        # Flag to track when theme needs reapplication after window flag changes
+        self._needs_theme_reapplication = False
+
+        # Story 7.2: System tray integration (FR38, FR39)
+        self._force_quit = False  # Flag to distinguish real exit from minimize to tray
+        self.tray_icon = None  # Will be created after window setup
+
+        # Window configuration
+        self._setup_window_properties()
+
+        # Create UI components
+        self._create_ui()
+
+        # Apply styling (will be updated when app_settings is set)
+        self._apply_default_theme()
+
+        # Setup window behavior
+        self._setup_window_behavior()
+
+        # Story 7.2: Setup system tray (FR38, FR39)
+        self._setup_system_tray()
+
+        # Story 12.1: Wire SessionRegistry → TTS indicator substate.
+        # Done last so all UI components (status_bar, service_status_bar)
+        # are constructed before any signals could fire.
+        if self._session_registry is not None:
+            self._connect_registry_to_indicator(self._session_registry)
+
+        self.logger.debug("MainWindow initialized successfully")
+
+    def _setup_window_properties(self):
+        """Configure basic window properties for compact design."""
+        # Set window title and icon
+        self.setWindowTitle("MyVoice")
+
+        # Set window icon for taskbar
+        icon_path = Path(__file__).parent.parent.parent / "icon" / "MyVoice.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+        # Set frameless window flags
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.Window
+        )
+
+        # Set compact window size (account for custom title bar ~28px)
+        self.setMinimumSize(QSize(320, 200))  # Minimum to fit all controls
+        self.setMaximumSize(QSize(600, 300))  # Maximum window size
+        self.resize(QSize(400, 220))          # Default size with room for buttons
+
+        # Make window resizable
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
+        self.logger.debug("Window properties configured")
+
+    def _create_ui(self):
+        """Create and layout the main UI components."""
+        # Create central widget and main layout
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Add custom title bar as first element
+        self.title_bar = CustomTitleBar(self)
+        main_layout.addWidget(self.title_bar)
+
+        # Create content container with original margins
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        # QA Round 2 Item #7: Reduced vertical margins for compact overlay
+        content_layout.setContentsMargins(8, 4, 8, 4)
+        content_layout.setSpacing(4)
+
+        # Text input area with inline action buttons (moved to top)
+        text_input_layout = QHBoxLayout()
+        text_input_layout.setSpacing(4)
+
+        self.text_input = QTextEdit()
+        self.text_input.setPlaceholderText("Enter text to convert to speech...")
+        self.text_input.setMinimumHeight(60)  # Approximately 2 lines minimum
+        self.text_input.setMaximumHeight(100)  # Allow growth to accommodate button column
+        self.text_input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.text_input.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.text_input.installEventFilter(self)  # Install event filter for Enter key handling
+
+        # Action buttons layout (vertical stack)
+        action_buttons_layout = QVBoxLayout()
+        action_buttons_layout.setSpacing(4)
+        action_buttons_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Quick Speak button as small icon button
+        self.quick_speak_button = QPushButton()
+        quick_speak_icon = self.style().standardIcon(self.style().StandardPixmap.SP_FileDialogListView)
+        self.quick_speak_button.setIcon(quick_speak_icon)
+        self.quick_speak_button.setFixedSize(24, 24)
+        self.quick_speak_button.setObjectName("quick_speak_button")
+        self.quick_speak_button.setToolTip("Quick Speak")
+        self.quick_speak_button.clicked.connect(self._on_quick_speak_clicked)
+
+        # Generate button as small icon button
+        self.generate_button = QPushButton()
+        generate_icon = self.style().standardIcon(self.style().StandardPixmap.SP_MediaPlay)
+        self.generate_button.setIcon(generate_icon)
+        self.generate_button.setFixedSize(24, 24)
+        self.generate_button.setObjectName("generate_button")
+        self.generate_button.setToolTip("Generate speech (Enter)")
+        self.generate_button.clicked.connect(self._on_generate_clicked)
+
+        # Story 2.4: Replay Last button (FR28, FR29)
+        self.replay_button = QPushButton()
+        replay_icon = self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload)
+        self.replay_button.setIcon(replay_icon)
+        self.replay_button.setFixedSize(24, 24)
+        self.replay_button.setObjectName("replay_button")
+        self.replay_button.setToolTip("No audio to replay")  # Session-only cache: disabled on fresh start
+        self.replay_button.clicked.connect(self._on_replay_last_clicked)
+        self.replay_button.setEnabled(False)  # Disabled until audio is generated
+
+        # Story 14.2: Save Generation button (Phase 4 of D-20). Enabled when
+        # SessionRegistry has a saveable session per Story 14.1's saveable-
+        # slot lifecycle; disabled otherwise. Sink-not-source widget — the
+        # registry → button wiring lives in `_connect_registry_to_indicator`.
+        self.save_button = SaveButton()
+        self.save_button.clicked.connect(self._on_save_clicked)
+
+        # Story 15.2: Clear Comms button (Phase 5 of D-20, OFR-B). Inserted
+        # between Save and Clear in the action toolbar (Save = preserve,
+        # Clear Comms = interject, Clear = wipe). Enablement is driven from
+        # ``_on_clear_comms_state_changed`` which reads both the cached
+        # AppSettings snapshot and the registry's saveable_session_id.
+        self.clear_comms_button = ClearCommsButton()
+        self.clear_comms_button.clicked.connect(self._on_clear_comms_button_clicked)
+
+        # Clear button as small icon button
+        self.clear_button = QPushButton()
+        clear_icon = self.style().standardIcon(self.style().StandardPixmap.SP_LineEditClearButton)
+        self.clear_button.setIcon(clear_icon)
+        self.clear_button.setFixedSize(24, 24)
+        self.clear_button.setObjectName("clear_button")
+        self.clear_button.setToolTip("Clear text")
+        self.clear_button.clicked.connect(self._on_clear_clicked)
+
+        action_buttons_layout.addWidget(self.quick_speak_button)
+        action_buttons_layout.addWidget(self.generate_button)
+        action_buttons_layout.addWidget(self.replay_button)  # Story 2.4: Replay Last
+        action_buttons_layout.addWidget(self.save_button)    # Story 14.2: Save Generation
+        action_buttons_layout.addWidget(self.clear_comms_button)  # Story 15.2: Clear Comms
+        action_buttons_layout.addWidget(self.clear_button)
+        action_buttons_layout.addStretch()  # Push buttons to top
+
+        text_input_layout.addWidget(self.text_input, 1)
+        text_input_layout.addLayout(action_buttons_layout)
+
+        content_layout.addLayout(text_input_layout)
+
+        # QA Round 2 Item #7: Combined emotion + voice + settings row (compact layout)
+        emotion_voice_layout = QHBoxLayout()
+        emotion_voice_layout.setSpacing(8)
+        emotion_voice_layout.setContentsMargins(0, 2, 0, 2)  # Reduced vertical margins
+
+        # Emotion Button Group (Story 3.1: FR6, FR10)
+        # 5 emoji buttons: 😐 😄 😢 😠 😏 (28x28px, 4px spacing)
+        # Neutral selected by default, accent border on selected
+        self.emotion_button_group = EmotionButtonGroup(self)
+        self.emotion_button_group.emotion_changed.connect(self._on_emotion_changed)
+        self.emotion_button_group.custom_emotion_requested.connect(self._on_custom_emotion_requested)
+        emotion_voice_layout.addWidget(self.emotion_button_group)
+
+        # Current voice display label (moved to right of emotions)
+        self.current_voice_label = QLabel("Voice: (None)")
+        self.current_voice_label.setObjectName("voice_label")
+        emotion_voice_layout.addWidget(self.current_voice_label, 1)
+
+        # Settings button with Qt standard icon
+        self.settings_button = QPushButton()
+        settings_icon = self.style().standardIcon(self.style().StandardPixmap.SP_FileDialogDetailedView)
+        self.settings_button.setIcon(settings_icon)
+        self.settings_button.setFixedSize(QSize(24, 24))
+        self.settings_button.setObjectName("settings_button")
+        self.settings_button.setToolTip("Open Settings (Ctrl+S)")
+        self.settings_button.clicked.connect(self._on_settings_clicked)
+        emotion_voice_layout.addWidget(self.settings_button)
+
+        content_layout.addLayout(emotion_voice_layout)
+
+        # Microphone control widget (visible only when mic mixing enabled)
+        self.mic_control_widget = MicControlWidget()
+        self.mic_control_widget.mute_toggled.connect(self._on_mic_mute_toggled)
+        self.mic_control_widget.volume_changed.connect(self._on_mic_volume_changed)
+        self.mic_control_widget.setVisible(False)  # Hidden by default
+        content_layout.addWidget(self.mic_control_widget)
+
+        # Add content widget to main layout
+        main_layout.addWidget(content_widget)
+
+        # Status bar with service indicators
+        self.status_bar = QStatusBar()
+        self.status_bar.showMessage(self._get_ready_message())
+
+        # Story 13.4: Queue-depth badge (Phase 3 closure of D-20). Added
+        # FIRST so it sits to the LEFT of the service indicators —
+        # ``QStatusBar::addPermanentWidget`` lays widgets out left-to-right
+        # in insertion order within the right-aligned permanent area, so
+        # the first-added widget is the leftmost permanent widget and the
+        # service bar (added next) lands to its right. Hidden until
+        # depth >= 1 (see queue_depth_badge.py contract).
+        self._queue_depth_badge = QueueDepthBadge()
+        self.status_bar.addPermanentWidget(self._queue_depth_badge)
+
+        # Add service status indicators to the right side
+        # Story 7.4: Use emoji mode for accessibility (FR42, FR43)
+        self.service_status_bar = ServiceStatusBar(use_emoji=True)
+        self.service_status_bar.service_status_clicked.connect(self._on_service_status_clicked)
+        self.status_bar.addPermanentWidget(self.service_status_bar)
+
+        # Story 7.4: Add TTS and Mic indicators by default (FR42, FR43)
+        self._setup_default_status_indicators()
+
+        self.setStatusBar(self.status_bar)
+
+        # Create resize grips for frameless window
+        self._create_resize_grips()
+
+        # Story 7.5: Setup accessibility features (NFR18, NFR19, NFR20)
+        self._setup_accessibility()
+
+        self.logger.debug("UI components created")
+
+    def _create_resize_grips(self):
+        """Create and initialize all resize grips for frameless window."""
+        # Create corner grips
+        self.corner_grips = [
+            CornerGrip(self, CornerGrip.CORNER_TOP_LEFT),
+            CornerGrip(self, CornerGrip.CORNER_TOP_RIGHT),
+            CornerGrip(self, CornerGrip.CORNER_BOTTOM_RIGHT),
+            CornerGrip(self, CornerGrip.CORNER_BOTTOM_LEFT),
+        ]
+
+        # Create edge grips
+        self.edge_grips = {
+            'left': SideGrip(self, SideGrip.EDGE_LEFT),
+            'top': SideGrip(self, SideGrip.EDGE_TOP),
+            'right': SideGrip(self, SideGrip.EDGE_RIGHT),
+            'bottom': SideGrip(self, SideGrip.EDGE_BOTTOM),
+        }
+
+        # Position grips initially
+        self._position_grips()
+
+        # Raise grips to ensure they're on top
+        for grip in self.corner_grips:
+            grip.raise_()
+        for grip in self.edge_grips.values():
+            grip.raise_()
+
+        self.logger.debug("Resize grips created and positioned")
+
+    def _setup_accessibility(self):
+        """
+        Setup accessibility features for keyboard navigation and screen readers.
+
+        Story 7.5: NFR18 (keyboard navigation), NFR19 (visual clarity), NFR20 (focus indicators)
+        """
+        # =======================================================================
+        # Task 1: Set Accessible Names for Screen Readers
+        # =======================================================================
+
+        # Text input
+        self.text_input.setAccessibleName("Text to speak")
+        self.text_input.setAccessibleDescription("Enter the text you want to convert to speech")
+
+        # Action buttons
+        self.quick_speak_button.setAccessibleName("Quick Speak")
+        self.quick_speak_button.setAccessibleDescription("Open quick phrases menu")
+
+        self.generate_button.setAccessibleName("Generate speech")
+        self.generate_button.setAccessibleDescription("Generate speech from entered text")
+
+        self.replay_button.setAccessibleName("Replay last audio")
+        self.replay_button.setAccessibleDescription("Replay the last generated speech")
+
+        # Story 14.2: Save Generation button accessibility
+        self.save_button.setAccessibleName("Save last generation")
+        self.save_button.setAccessibleDescription("Save the most recent generated speech to a WAV file")
+
+        # Story 15.2: Clear Comms button accessibility
+        self.clear_comms_button.setAccessibleName("Clear Comms")
+        self.clear_comms_button.setAccessibleDescription(
+            "Interrupt current playback and replay your configured Clear Comms audio source"
+        )
+
+        self.clear_button.setAccessibleName("Clear text")
+        self.clear_button.setAccessibleDescription("Clear the text input field")
+
+        # Voice label (read-only, informational)
+        self.current_voice_label.setAccessibleName("Current voice")
+
+        # Settings button
+        self.settings_button.setAccessibleName("Settings")
+        self.settings_button.setAccessibleDescription("Open application settings")
+
+        # Status bar
+        self.status_bar.setAccessibleName("Status")
+        self.status_bar.setAccessibleDescription("Application status messages")
+
+        # =======================================================================
+        # Task 2: Set Focus Policies for Keyboard Navigation
+        # =======================================================================
+
+        # Text input - strong focus (both keyboard and mouse)
+        self.text_input.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        # Buttons - strong focus
+        self.quick_speak_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.generate_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.replay_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.save_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # Story 14.2
+        self.clear_comms_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # Story 15.2
+        self.clear_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.settings_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        # Voice label - no focus (informational only)
+        self.current_voice_label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        # =======================================================================
+        # Task 3: Set Tab Order for Logical Navigation
+        # =======================================================================
+
+        # Tab order: Text → Quick Speak → Generate → Replay → Save → Clear Comms → Clear → Settings → Emotions
+        # Story 14.2: Save inserted between Replay and Clear.
+        # Story 15.2: Clear Comms inserted between Save and Clear.
+        QWidget.setTabOrder(self.text_input, self.quick_speak_button)
+        QWidget.setTabOrder(self.quick_speak_button, self.generate_button)
+        QWidget.setTabOrder(self.generate_button, self.replay_button)
+        QWidget.setTabOrder(self.replay_button, self.save_button)
+        QWidget.setTabOrder(self.save_button, self.clear_comms_button)
+        QWidget.setTabOrder(self.clear_comms_button, self.clear_button)
+        QWidget.setTabOrder(self.clear_button, self.settings_button)
+
+        # Connect settings button to emotion buttons
+        # Get first emotion button from the group
+        emotion_buttons = self.emotion_button_group.get_emotion_buttons()
+        if emotion_buttons:
+            QWidget.setTabOrder(self.settings_button, emotion_buttons[0])
+
+            # Chain emotion buttons together
+            for i in range(len(emotion_buttons) - 1):
+                QWidget.setTabOrder(emotion_buttons[i], emotion_buttons[i + 1])
+
+            # Connect last emotion button back to text input for circular navigation
+            # (Actually, tab should naturally cycle, so we don't need this)
+
+        self.logger.debug("Accessibility features configured (NFR18, NFR19, NFR20)")
+
+    def announce_status(self, message: str, priority: str = "polite"):
+        """
+        Announce a status message for screen readers via live regions.
+
+        Story 7.5: NFR18 - Accessible status announcements for screen readers.
+
+        Args:
+            message: The message to announce
+            priority: "polite" (wait for user to finish) or "assertive" (interrupt)
+        """
+        try:
+            # Update status bar message (visible to users)
+            self.status_bar.showMessage(message)
+
+            # Notify accessibility clients of the change
+            # This triggers screen readers to announce the new status
+            if ACCESSIBILITY_AVAILABLE:
+                event = QAccessibleEvent(self.status_bar, QAccessible.Event.ValueChanged)
+                QAccessible.updateAccessibility(event)
+
+            self.logger.debug(f"Announced status: {message}")
+        except Exception as e:
+            self.logger.warning(f"Failed to announce status: {e}")
+
+    def announce_generation_complete(self):
+        """Announce that speech generation is complete (Story 7.5)."""
+        self.announce_status("Generation complete", priority="polite")
+
+    def announce_error(self, error_message: str):
+        """Announce an error for immediate screen reader notification (Story 7.5)."""
+        self.announce_status(f"Error: {error_message}", priority="assertive")
+
+    def resizeEvent(self, event):
+        """Handle window resize to reposition grips."""
+        super().resizeEvent(event)
+        if hasattr(self, 'corner_grips') and hasattr(self, 'edge_grips'):
+            self._position_grips()
+
+    def _position_grips(self):
+        """Position all resize grips along window edges and corners."""
+        rect = self.rect()
+        grip_size = 6
+        title_bar_height = 28
+
+        # Position corner grips
+        self.corner_grips[0].move(0, 0)  # Top-left
+        self.corner_grips[1].move(rect.width() - grip_size, 0)  # Top-right
+        self.corner_grips[2].move(rect.width() - grip_size, rect.height() - grip_size)  # Bottom-right
+        self.corner_grips[3].move(0, rect.height() - grip_size)  # Bottom-left
+
+        # Position edge grips
+        # Left edge
+        self.edge_grips['left'].setGeometry(
+            0,
+            grip_size,
+            grip_size,
+            rect.height() - 2 * grip_size
+        )
+
+        # Top edge (avoid title bar for easier dragging)
+        self.edge_grips['top'].setGeometry(
+            grip_size,
+            0,
+            rect.width() - 2 * grip_size,
+            grip_size
+        )
+
+        # Right edge
+        self.edge_grips['right'].setGeometry(
+            rect.width() - grip_size,
+            grip_size,
+            grip_size,
+            rect.height() - 2 * grip_size
+        )
+
+        # Bottom edge
+        self.edge_grips['bottom'].setGeometry(
+            grip_size,
+            rect.height() - grip_size,
+            rect.width() - 2 * grip_size,
+            grip_size
+        )
+
+    def changeEvent(self, event):
+        """Handle window state changes."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            # Update title bar maximize button state
+            if hasattr(self, 'title_bar'):
+                is_maximized = self.windowState() & Qt.WindowState.WindowMaximized
+                self.title_bar.update_maximize_state(bool(is_maximized))
+
+    def _apply_default_theme(self):
+        """Apply default theme to the window using the theme manager."""
+        try:
+            # Set window class for CSS targeting
+            self.setProperty("class", "compact")
+
+            # Apply dark theme by default (compact variant)
+            success = self.theme_manager.apply_theme("dark", self)
+
+            if success:
+                self.logger.debug("Successfully applied default dark theme")
+
+                # Connect theme manager signals
+                self.theme_manager.theme_changed.connect(self._on_theme_changed)
+                self.theme_manager.theme_load_failed.connect(self._on_theme_load_failed)
+            else:
+                self.logger.warning("Failed to apply dark theme, using compact fallback")
+                # Fallback to compact theme if dark theme fails
+                fallback_success = self.theme_manager.apply_theme("light", self)
+                if not fallback_success:
+                    self._apply_fallback_style()
+
+        except Exception as e:
+            self.logger.exception(f"Error applying default theme: {e}")
+            self._apply_fallback_style()
+
+    def apply_theme_from_settings(self):
+        """Apply theme based on current app settings."""
+        if not self.app_settings:
+            self.logger.debug("No app settings available, keeping current theme")
+            return
+
+        try:
+            theme_name = self.app_settings.ui_theme
+            self.logger.info(f"Applying theme from settings: {theme_name}")
+
+            # Set window class for CSS targeting
+            self.setProperty("class", "compact")
+
+            success = self.theme_manager.apply_theme(theme_name, self)
+
+            if success:
+                self.logger.info(f"THEME DEBUG: Successfully applied theme from settings: {theme_name}")
+            else:
+                self.logger.warning(f"THEME DEBUG: Failed to apply theme '{theme_name}', falling back to dark theme")
+                # Try to fallback to dark theme
+                fallback_success = self.theme_manager.apply_theme("dark", self)
+                if not fallback_success:
+                    self.logger.warning("Dark theme fallback failed, trying light theme")
+                    light_fallback = self.theme_manager.apply_theme("light", self)
+                    if not light_fallback:
+                        self.logger.error("All theme fallbacks failed, using minimal styling")
+                        self._apply_fallback_style()
+
+        except Exception as e:
+            self.logger.exception(f"Error applying theme from settings: {e}")
+
+    def showEvent(self, event: QShowEvent):
+        """Override showEvent to handle theme reapplication after window flag changes."""
+        super().showEvent(event)
+
+        # If we need to reapply theme after window recreation
+        if self._needs_theme_reapplication:
+            self._needs_theme_reapplication = False
+            # Use a very short timer to ensure the window is fully shown
+            QTimer.singleShot(10, self._force_theme_reapplication)
+            self.logger.debug("Scheduled theme reapplication after showEvent")
+
+    def _force_theme_reapplication(self):
+        """
+        Force theme reapplication after window recreation.
+
+        This method ensures the theme is always applied, even if app_settings
+        is temporarily unavailable during window flag changes.
+        """
+        try:
+            # Clear any existing stylesheet first to force a clean state
+            self.setStyleSheet("")
+
+            # Set window class for CSS targeting
+            self.setProperty("class", "compact")
+
+            # Force immediate processing of property changes
+            self.style().polish(self)
+
+            # Try to apply theme from settings first
+            if self.app_settings:
+                theme_name = self.app_settings.ui_theme
+                success = self.theme_manager.apply_theme(theme_name, self)
+                if success:
+                    self.logger.debug(f"Successfully reapplied theme: {theme_name}")
+                    self._force_style_refresh()
+                    return
+
+            # Fallback to dark theme if settings not available or failed
+            self.logger.debug("Falling back to dark theme for window recreation")
+            success = self.theme_manager.apply_theme("dark", self)
+
+            if not success:
+                # Last resort: apply fallback style
+                self.logger.warning("Theme manager failed, applying fallback style")
+                self._apply_fallback_style()
+                self._force_style_refresh()
+            else:
+                self.logger.debug("Successfully applied dark theme fallback")
+                self._force_style_refresh()
+
+        except Exception as e:
+            self.logger.error(f"Error in force theme reapplication: {e}")
+            # Ultimate fallback - force any theme to avoid white window
+            try:
+                self.logger.debug("Attempting ultimate fallback theme application")
+                self._apply_fallback_style()
+                self._force_style_refresh()
+            except Exception as fallback_error:
+                self.logger.error(f"Even fallback style failed: {fallback_error}")
+                # Last ditch effort - apply minimal dark background directly
+                self.setStyleSheet("QMainWindow { background-color: #2b2b2b; color: white; }")
+                self._force_style_refresh()
+
+    def _force_style_refresh(self):
+        """
+        Force a complete style refresh and repaint of the window.
+
+        This simulates what happens when minimizing/restoring the window.
+        """
+        try:
+            # Force style recalculation for the window and all children
+            self.style().polish(self)
+
+            # Force immediate update and repaint
+            self.update()
+            self.repaint()
+
+            # Also refresh all child widgets
+            for child in self.findChildren(QWidget):
+                child.style().polish(child)
+                child.update()
+                child.repaint()
+
+            self.logger.debug("Forced complete style refresh and repaint")
+
+        except Exception as e:
+            self.logger.error(f"Error in force style refresh: {e}")
+
+    def _on_voice_changed_from_settings(self, voice_name: str):
+        """
+        Handle voice change from settings dialog.
+
+        Args:
+            voice_name: Name of the selected voice profile
+        """
+        try:
+            # Update voice label
+            self.update_voice_label(voice_name)
+
+            # Emit voice change signal to app
+            self.voice_changed.emit(voice_name)
+
+            self.logger.debug(f"Voice changed from settings: {voice_name}")
+        except Exception as e:
+            self.logger.error(f"Error handling voice change from settings: {e}")
+
+    def _on_voice_created_from_settings(self, profile):
+        """
+        Handle voice creation from settings dialog (design or clone).
+
+        Story 4.2: Voice Design Creation Workflow
+
+        Args:
+            profile: VoiceProfile that was created
+        """
+        try:
+            self.logger.info(f"Voice created from settings: {profile.name} (type={profile.voice_type.value})")
+
+            # Update the voice label to the newly created voice
+            self.update_voice_label(profile.name)
+
+            # Emit voice change to notify app to update active voice
+            self.voice_changed.emit(profile.name)
+
+            # Request voice list refresh to pick up the new voice
+            self.voice_refresh_requested.emit()
+
+            self.status_bar.showMessage(f"Voice '{profile.name}' created successfully", 5000)
+
+        except Exception as e:
+            self.logger.error(f"Error handling voice creation from settings: {e}")
+
+    def _on_voice_deleted_from_settings(self, voice_name: str):
+        """
+        Handle voice deletion from settings dialog.
+
+        Story 4.4: Voice Library Management (FR19)
+
+        Args:
+            voice_name: Name of the deleted voice
+        """
+        try:
+            self.logger.info(f"Voice deleted from settings: {voice_name}")
+
+            # Request voice list refresh
+            self.voice_refresh_requested.emit()
+
+            self.status_bar.showMessage(f"Voice '{voice_name}' deleted", 3000)
+
+        except Exception as e:
+            self.logger.error(f"Error handling voice deletion from settings: {e}")
+
+    def _on_settings_changed(self, new_settings: AppSettings):
+        """
+        Handle settings change notifications from the settings dialog.
+
+        Args:
+            new_settings: New settings to apply
+        """
+        self.app_settings = new_settings
+
+        # Apply theme from updated settings
+        self.apply_theme_from_settings()
+
+        # Apply always-on-top setting
+        self.set_always_on_top(new_settings.always_on_top)
+
+        # Story 7.3: Apply window transparency (FR41)
+        self.set_window_transparency(new_settings.window_transparency)
+
+        self.logger.debug("Settings changed and applied to MainWindow")
+
+    def _apply_fallback_style(self):
+        """Apply minimal fallback styling when theme manager fails."""
+        self.logger.warning("THEME DEBUG: Applying fallback style - this indicates theme loading failed!")
+        fallback_style = """
+            QMainWindow {
+                background-color: #f8f9fa;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 8pt;
+                color: #212529;
+            }
+
+            QLabel {
+                color: #495057;
+                font-weight: 500;
+                padding: 1px 0px;
+            }
+
+            QPushButton {
+                background-color: #0d6efd;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: 500;
+                font-size: 8pt;
+                min-height: 16px;
+            }
+
+            QPushButton:hover {
+                background-color: #0b5ed7;
+            }
+
+            QPushButton:pressed {
+                background-color: #0a58ca;
+            }
+
+            QPushButton:disabled {
+                background-color: #6c757d;
+                color: #adb5bd;
+                border: 1px solid #495057;
+            }
+
+            QPushButton#generate_button {
+                background-color: #28a745;
+                border-radius: 12px;
+            }
+
+            QPushButton#generate_button:hover {
+                background-color: #218838;
+            }
+
+            QPushButton#generate_button:pressed {
+                background-color: #1e7e34;
+            }
+
+            QPushButton#generate_button:disabled {
+                background-color: #6c757d;
+            }
+
+            /* Story 2.4: Replay Last button styling */
+            QPushButton#replay_button {
+                background-color: #17a2b8;
+                border-radius: 12px;
+            }
+
+            QPushButton#replay_button:hover {
+                background-color: #138496;
+            }
+
+            QPushButton#replay_button:pressed {
+                background-color: #117a8b;
+            }
+
+            QPushButton#replay_button:disabled {
+                background-color: #6c757d;
+            }
+
+            QPushButton#clear_button {
+                background-color: #6c757d;
+                border-radius: 12px;
+            }
+
+            QPushButton#clear_button:hover {
+                background-color: #5a6268;
+            }
+
+            QPushButton#clear_button:pressed {
+                background-color: #545b62;
+            }
+
+            QComboBox {
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                padding: 4px 8px;
+                background-color: white;
+                font-size: 8pt;
+            }
+
+            QLineEdit {
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                padding: 6px 8px;
+                background-color: white;
+                font-size: 8pt;
+                min-height: 20px;
+            }
+
+            QTextEdit {
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                padding: 6px 8px;
+                background-color: white;
+                font-size: 8pt;
+            }
+
+            QStatusBar {
+                background-color: #f1f3f4;
+                border-top: 1px solid #dee2e6;
+                font-size: 7pt;
+                color: #6c757d;
+                padding: 2px 6px;
+            }
+        """
+
+        self.setStyleSheet(fallback_style)
+        self.logger.debug("Applied fallback compact stylesheet")
+
+    def _on_theme_changed(self, theme_name: str):
+        """
+        Handle theme change notifications.
+
+        Args:
+            theme_name: Name of the new theme
+        """
+        self.logger.debug(f"Theme changed to: {theme_name}")
+
+    def _on_theme_load_failed(self, theme_name: str, error_message: str):
+        """
+        Handle theme load failure notifications.
+
+        Args:
+            theme_name: Name of the theme that failed to load
+            error_message: Error message
+        """
+        self.logger.error(f"Failed to load theme '{theme_name}': {error_message}")
+        self._apply_fallback_style()
+
+    def switch_theme(self, theme_name: str) -> bool:
+        """
+        Switch to a different theme.
+
+        Args:
+            theme_name: Name of the theme to switch to
+
+        Returns:
+            True if theme switch successful, False otherwise
+        """
+        return self.theme_manager.switch_theme(theme_name, self)
+
+    def _setup_window_behavior(self):
+        """Setup additional window behavior and event handling."""
+        # Set focus policy for better keyboard navigation
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        # Auto-focus on text input when window is shown
+        self.text_input.setFocus()
+
+        # Setup auto-save timer for text content (optional)
+        self._auto_save_timer = QTimer()
+        self._auto_save_timer.timeout.connect(self._auto_save_text)
+        self._auto_save_timer.start(30000)  # Auto-save every 30 seconds
+
+        self.logger.debug("Window behavior configured")
+
+    def _setup_system_tray(self):
+        """
+        Setup system tray icon and context menu (Story 7.2: FR38, FR39).
+
+        Creates a system tray icon with:
+        - Left-click: Restore window
+        - Right-click: Context menu with Restore, Settings, Exit
+        - Tooltip: "MyVoice - Click to restore"
+        """
+        # Check if system tray is available
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.logger.warning("System tray not available on this platform")
+            return
+
+        # Create tray icon
+        icon_path = Path(__file__).parent.parent.parent / "icon" / "MyVoice.png"
+        if icon_path.exists():
+            tray_icon = QIcon(str(icon_path))
+        else:
+            # Fallback to application icon
+            tray_icon = self.windowIcon()
+            self.logger.warning(f"Tray icon not found at {icon_path}, using window icon")
+
+        self.tray_icon = QSystemTrayIcon(tray_icon, self)
+        self.tray_icon.setToolTip("MyVoice - Click to restore")
+
+        # Create context menu
+        tray_menu = QMenu()
+
+        # Restore action
+        restore_action = tray_menu.addAction("Restore")
+        restore_action.triggered.connect(self._restore_from_tray)
+
+        # Settings action
+        settings_action = tray_menu.addAction("Settings")
+        settings_action.triggered.connect(self._on_settings_clicked)
+
+        # Voice Design Studio action (Story 1.2: FR1)
+        voice_design_action = tray_menu.addAction("Voice Design Studio")
+        voice_design_action.triggered.connect(self._on_voice_design_studio_clicked)
+
+        tray_menu.addSeparator()
+
+        # Exit action
+        exit_action = tray_menu.addAction("Exit")
+        exit_action.triggered.connect(self._quit_application)
+
+        self.tray_icon.setContextMenu(tray_menu)
+
+        # Connect activated signal (handles clicks)
+        self.tray_icon.activated.connect(self._on_tray_icon_activated)
+
+        self.logger.debug("System tray configured")
+
+    def _on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason):
+        """
+        Handle tray icon activation (click).
+
+        Args:
+            reason: The activation reason (click, double-click, etc.)
+        """
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            # Left-click: restore window
+            self._restore_from_tray()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            # Double-click: also restore window
+            self._restore_from_tray()
+
+    def _minimize_to_tray(self):
+        """
+        Minimize window to system tray (Story 7.2: FR38).
+
+        Hides the window and shows the tray icon. On first use,
+        shows a notification explaining the behavior.
+        """
+        if not self.tray_icon:
+            # Tray not available, just minimize normally
+            self.showMinimized()
+            return
+
+        # Hide the window
+        self.hide()
+
+        # Show tray icon
+        self.tray_icon.show()
+
+        # Show one-time notification (Story 7.2)
+        if self.app_settings and not self.app_settings.tray_notification_shown:
+            self.tray_icon.showMessage(
+                "MyVoice",
+                "MyVoice is still running in the system tray. Click the icon to restore.",
+                QSystemTrayIcon.MessageIcon.Information,
+                3000  # 3 seconds
+            )
+            # Mark notification as shown
+            self.app_settings.tray_notification_shown = True
+            # Emit settings changed to persist this
+            self.settings_changed.emit(self.app_settings)
+
+        self.logger.debug("Window minimized to system tray")
+
+    def _restore_from_tray(self):
+        """
+        Restore window from system tray (Story 7.2: FR39).
+
+        Shows the window, brings it to front, and focuses the text input.
+        """
+        # Show the window
+        self.show()
+        self.showNormal()
+
+        # Restore always-on-top if enabled
+        if self.app_settings and self.app_settings.always_on_top:
+            self.set_always_on_top(True)
+
+        # Bring to front and activate
+        self.raise_()
+        self.activateWindow()
+
+        # Focus text input
+        self.text_input.setFocus()
+
+        # Hide tray icon (optional - keep visible if desired)
+        # self.tray_icon.hide()
+
+        self.logger.debug("Window restored from system tray")
+
+    def _quit_application(self):
+        """
+        Fully quit the application (Story 7.2).
+
+        Sets force quit flag and closes the window, which triggers
+        proper cleanup in closeEvent.
+        """
+        self._force_quit = True
+
+        # Hide tray icon
+        if self.tray_icon:
+            self.tray_icon.hide()
+
+        # Close the window (triggers closeEvent with _force_quit=True)
+        self.close()
+
+        self.logger.info("Application quit requested from tray menu")
+
+    def _on_generate_clicked(self):
+        """Handle generate button click with enhanced visual feedback."""
+        text = self.text_input.toPlainText().strip()
+
+        if not text:
+            self.status_bar.showMessage("Please enter text to generate speech", 3000)
+            self.text_input.setFocus()
+            return
+
+        # Start TTS generation with visual feedback
+        self._start_tts_generation(text)
+
+        # Story 11.4 follow-up: stash the text BEFORE clearing so Stop
+        # can restore it. The pre-existing UX intentionally clears the
+        # input on Generate so the user can start typing the next
+        # utterance while the current one is generating; Stop reverses
+        # that opt-in clear.
+        self._last_generation_text = text
+
+        # Clear the text input after starting generation
+        self.text_input.clear()
+        self.text_input.setFocus()
+
+    def _on_replay_last_clicked(self):
+        """
+        Handle replay last button click (Story 2.4: FR28, FR29).
+
+        Emits replay_last_requested signal to replay the last generated audio
+        through both monitor and virtual mic.
+        """
+        self.logger.info("Replay last audio requested")
+        self.status_bar.showMessage("Replaying last audio...", 2000)
+        self.replay_last_requested.emit()
+
+    def _start_tts_generation(self, text: str):
+        """
+        Start TTS generation with visual feedback and stub implementation.
+
+        Args:
+            text: Text to convert to speech
+        """
+        self.logger.info(f"Starting TTS generation for: {text[:50]}...")
+
+        # Set generating state with visual feedback
+        self.set_generation_status("Generating speech...", is_generating=True)
+
+        # Emit signal for actual TTS processing (when service is connected)
+        self.text_generate_requested.emit(text)
+
+
+
+    def eventFilter(self, obj, event):
+        """Handle events for text input, specifically Enter key for generation."""
+        if obj is self.text_input and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
+                # Ctrl+Enter allows normal newline behavior
+                if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                    return False  # Allow normal processing
+                else:
+                    # Plain Enter triggers generation
+                    self._on_generate_clicked()
+                    return True  # Consume the event
+        return super().eventFilter(obj, event)
+
+    def _on_clear_clicked(self):
+        """
+        Handle clear button click.
+
+        Story 11.4 follow-up: dual-mode behavior based on generation state:
+          * **Generating** (``self._is_generating`` is True): emit
+            ``cancel_generation_requested`` so the application controller
+            can call ``QwenTTSService.cancel_generation()``. The text
+            input is intentionally NOT cleared — ``cancel_generation()``
+            preserves text so the user can retry without re-typing.
+          * **Idle**: smart apostrophe-aware clear of the text input.
+
+        Apostrophe semantics (idle mode):
+          - If text ends with apostrophe: Clear all text
+          - If text contains apostrophe (not at end): Clear everything
+            after the first apostrophe
+          - Otherwise: Clear all text
+        """
+        # Story 11.4 follow-up: Stop mode takes priority over Clear when
+        # generation is in flight OR audio is playing. The signal is
+        # consumed by the app controller (see app.py wiring), which
+        # cancels generation and stops playback as appropriate. The
+        # state flips back to idle through the standard cancelled /
+        # playback-complete callback paths.
+        if self._is_generating or self._is_playing:
+            self.logger.info(
+                "Clear button (Stop mode): cancelling "
+                f"{'generation' if self._is_generating else 'playback'}"
+            )
+            self.cancel_generation_requested.emit()
+            # Restore the text the user generated from so they can edit
+            # and retry without retyping. Safe to do regardless of
+            # whether the underlying cancel actually killed the audio
+            # in time — at worst they get a verbose status message and
+            # the previous text in the box.
+            if self._last_generation_text:
+                self.text_input.setPlainText(self._last_generation_text)
+                self.text_input.setFocus()
+            return
+
+        try:
+            current_text = self.text_input.toPlainText()
+
+            if not current_text:
+                return  # Nothing to clear
+
+            # Check if last character is apostrophe
+            if current_text.endswith("'"):
+                # Clear all text
+                self.text_input.clear()
+                self.logger.debug("Clear button: Cleared all text (ends with apostrophe)")
+            elif "'" in current_text:
+                # Clear everything after first apostrophe (keep text before apostrophe + apostrophe)
+                apostrophe_index = current_text.index("'")
+                cleared_text = current_text[:apostrophe_index + 1]
+                self.text_input.setPlainText(cleared_text)
+                self.logger.debug(f"Clear button: Cleared after apostrophe - kept '{cleared_text}'")
+            else:
+                # No apostrophe, clear all text
+                self.text_input.clear()
+                self.logger.debug("Clear button: Cleared all text (no apostrophe)")
+
+        except Exception as e:
+            self.logger.error(f"Error in clear button handler: {e}")
+            # Fallback to simple clear
+            self.text_input.clear()
+
+    def _on_enter_pressed(self):
+        """Handle Enter key press in text input - deprecated, using eventFilter now."""
+        self._on_generate_clicked()
+
+    def _auto_save_text(self):
+        """Auto-save text content (placeholder for future implementation)."""
+        # TODO: Implement auto-save functionality when configuration service is ready
+        pass
+
+    def _on_emotion_changed(self, preset: EmotionPreset):
+        """
+        Handle emotion button group selection changes.
+
+        Args:
+            preset: The selected emotion preset
+        """
+        try:
+            self.logger.debug(f"Emotion changed to: {preset.display_name}")
+            # Status bar feedback
+            self.status_bar.showMessage(f"Emotion: {preset.display_name}", 2000)
+
+        except Exception as e:
+            self.logger.error(f"Error handling emotion change: {e}")
+
+    def _on_custom_emotion_requested(self):
+        """Handle Custom... button click - opens Settings to Custom Emotion section (Story 3.4)."""
+        try:
+            self.logger.debug("Custom emotion requested - opening settings")
+            self._on_settings_clicked()
+            # Navigate to Custom Emotion section in settings
+            if self.settings_dialog:
+                self.settings_dialog.navigate_to_custom_emotion()
+        except Exception as e:
+            self.logger.error(f"Error handling custom emotion request: {e}")
+
+    def _on_custom_emotion_applied(self, custom_text: str):
+        """
+        Handle custom emotion applied from settings dialog (Story 3.4).
+
+        Args:
+            custom_text: The custom emotion instruction text
+        """
+        try:
+            self.logger.info(f"Custom emotion applied: {custom_text}")
+            # Set custom emotion in the emotion button group
+            self.emotion_button_group.set_custom_emotion(custom_text)
+            # Update status bar
+            self.status_bar.showMessage("Custom emotion applied", 2000)
+        except Exception as e:
+            self.logger.error(f"Error applying custom emotion: {e}")
+
+    def get_emotion_preset(self) -> EmotionPreset:
+        """
+        Get the currently selected emotion preset.
+
+        Returns:
+            EmotionPreset: Current emotion preset
+        """
+        return self.emotion_button_group.get_current_preset()
+
+    def get_emotion_instruct(self) -> str:
+        """
+        Get the TTS instruct parameter for the current emotion.
+
+        Returns:
+            str: Instruct string for TTS generation
+        """
+        return self.emotion_button_group.get_current_instruct()
+
+    def set_emotion_preset(self, preset: EmotionPreset):
+        """
+        Set the selected emotion preset.
+
+        Args:
+            preset: The emotion preset to select
+        """
+        self.emotion_button_group.set_preset(preset)
+
+    def set_emotion_by_index(self, index: int) -> bool:
+        """
+        Set the emotion by index (0=Neutral, 1=Happy, 2=Sad, 3=Angry, 4=Flirtatious).
+
+        Args:
+            index: Emotion index (0-4)
+
+        Returns:
+            bool: True if index was valid, False otherwise
+        """
+        return self.emotion_button_group.set_preset_by_index(index)
+
+    def set_emotion_enabled(self, enabled: bool):
+        """
+        Enable or disable emotion selection.
+
+        Used when switching to cloned voices which don't support emotion control.
+
+        Args:
+            enabled: Whether emotion buttons should be enabled
+        """
+        self.emotion_button_group.set_emotion_enabled(enabled)
+
+    def update_voice_emotions(self, available_emotions: list, voice_name: str = ""):
+        """
+        Update emotion buttons based on available emotions for the voice.
+
+        Emotion Variants: EMBEDDING voices have specific emotions available.
+        This enables only the buttons for available emotions.
+
+        Args:
+            available_emotions: List of emotion IDs available for this voice
+                               (e.g., ["neutral", "happy", "sad"])
+            voice_name: Voice name for tooltip on disabled buttons
+        """
+        self.emotion_button_group.update_available_emotions(available_emotions, voice_name)
+
+    def set_voice_manager(self, voice_manager):
+        """
+        Set the voice profile manager (now passed to settings dialog).
+
+        Args:
+            voice_manager: VoiceProfileManager instance
+        """
+        self.voice_manager = voice_manager
+
+        # Update voice label with current active voice
+        try:
+            if voice_manager:
+                active_profile = voice_manager.get_active_profile()
+                if active_profile:
+                    self.update_voice_label(active_profile.name)
+        except Exception as e:
+            self.logger.debug(f"Could not update voice label during voice manager setup: {e}")
+
+        self.logger.debug("Voice manager set for MainWindow")
+
+    def set_tts_service(self, tts_service):
+        """
+        Set the TTS service for voice creation dialogs.
+
+        Args:
+            tts_service: QwenTTSService instance
+        """
+        self.tts_service = tts_service
+        self.logger.info(f"TTS service set for MainWindow: {'available' if tts_service else 'None'}")
+
+        # Connect model loading/ready callbacks for UI feedback
+        if tts_service:
+            tts_service.set_model_loading_callback(self._on_model_loading)
+            tts_service.set_model_ready_callback(self._on_model_ready)
+            self.logger.debug("Connected model loading/ready callbacks")
+
+        # Update settings dialog if it exists (propagate TTS availability)
+        if self.settings_dialog:
+            self.settings_dialog.set_tts_service(tts_service)
+            self.logger.info("Propagated TTS service to existing settings dialog")
+        else:
+            self.logger.debug("Settings dialog not yet created, TTS service will be set when opened")
+
+    def set_whisper_service(self, whisper_service):
+        """
+        Set the Whisper service for transcription in Voice Design Studio.
+
+        Args:
+            whisper_service: WhisperService instance for transcription
+        """
+        self.whisper_service = whisper_service
+        self.logger.info(f"Whisper service set for MainWindow: {'available' if whisper_service else 'None'}")
+
+        # Update settings dialog if it exists (propagate Whisper availability)
+        if self.settings_dialog:
+            self.settings_dialog.set_whisper_service(whisper_service)
+            self.logger.info("Propagated Whisper service to existing settings dialog")
+        else:
+            self.logger.debug("Settings dialog not yet created, Whisper service will be set when opened")
+
+    def update_voice_list(self, voices: list[str]):
+        """
+        Update the voice list (now handled by settings dialog).
+        This method is kept for compatibility.
+
+        Args:
+            voices: List of available voice names
+        """
+        # Voice selection is now in settings dialog, this is a no-op
+        self.logger.debug(f"Voice list update requested with {len(voices)} voices (handled by settings dialog)")
+
+    def update_voice_label(self, voice_name: str):
+        """
+        Update the voice display label.
+
+        Args:
+            voice_name: Name of the currently selected voice
+        """
+        self.current_voice_label.setText(f"Voice: {voice_name}")
+
+    def _get_ready_message(self) -> str:
+        """
+        Get the appropriate ready message based on TTS availability.
+
+        Returns:
+            str: Ready message reflecting current TTS status
+        """
+        if self._tts_available:
+            return "Ready"
+        else:
+            return "TTS Unavailable"
+
+    def set_generation_status(self, status: str, is_generating: bool = False):
+        """
+        Update the generation status display.
+
+        Args:
+            status: Status message to display
+            is_generating: Whether generation is in progress
+        """
+        self.status_bar.showMessage(status)
+
+        # Story 11.4 follow-up: track in-flight state so the Clear button
+        # knows whether to clear text (idle) or emit cancel (generating).
+        # Story 20.7 AC #4: record here, then DERIVE the button state in
+        # ``_refresh_generate_enabled``. Assigning ``setEnabled`` directly
+        # from ``is_generating`` alone would let a generation finishing
+        # mid-priming re-enable a button that compile priming is still
+        # blocking, and vice versa.
+        self._is_generating = is_generating
+        self._refresh_generate_enabled()
+
+        # Story 7.4: Enable/disable pulsing animation during generation
+        self.set_generation_pulsing(is_generating)
+
+        if is_generating:
+            # Change icon to indicate loading/processing for icon button
+            loading_icon = self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload)
+            self.generate_button.setIcon(loading_icon)
+            self.generate_button.setToolTip("Generating speech...")
+        else:
+            # Restore original play icon
+            generate_icon = self.style().standardIcon(self.style().StandardPixmap.SP_MediaPlay)
+            self.generate_button.setIcon(generate_icon)
+            self.generate_button.setToolTip("Generate speech (Enter)")
+
+        # Story 11.4 follow-up: Clear-vs-Stop visuals are driven by the
+        # combined state (generating OR playing), not just generating.
+        self._refresh_clear_button_mode()
+
+    def set_engine_priming(self, is_priming: bool) -> None:
+        """Story 20.7 AC #1/#2 — consumer half of the compile-priming
+        declaration.
+
+        ``QwenTTSService`` declares when startup compile priming holds
+        ``_request_semaphore``; this window acts on it by gating Generate.
+        A press during that window does not fail — it *queues*, silently,
+        for as long as priming runs (~4.4-4.9 s on an RTX 5090; measured at
+        840 ms and 1,383 ms of hidden wait in two of eighteen Story 20.6
+        captures). The visible reason is the "Preparing TTS engine…"
+        message the same priming region already puts on the TTS indicator;
+        this method deliberately introduces no second message channel.
+
+        AC #2 is load-bearing: priming is non-fatal and can end by raising,
+        by cancellation, or via any of its gates, so the producer calls this
+        with ``False`` from a ``finally``. Keep this method total — no early
+        return, no raise, no dependency on the True call having happened.
+        """
+        self._is_priming = bool(is_priming)
+        self._refresh_generate_enabled()
+
+    def _refresh_generate_enabled(self) -> None:
+        """Story 20.7 AC #4 — the single owner of the Generate button's
+        enabled state.
+
+        Two independent producers can block Generate: the user's own
+        generation (``_is_generating``) and startup compile priming
+        (``_is_priming``). They overlap in both orders on a real launch, so
+        each records its own flag and the button is *derived* from both.
+        Neither producer may assign ``setEnabled`` itself; whichever
+        finished last would otherwise decide for the one still running.
+        Idempotent.
+        """
+        self.generate_button.setEnabled(
+            not (self._is_generating or self._is_priming)
+        )
+
+    def set_playback_active(self, is_playing: bool) -> None:
+        """
+        Mark whether audio playback is currently in flight.
+
+        Story 11.4 follow-up: app.py calls this when ``play_dual_stream``
+        starts and when the playback-complete callback fires. The
+        ``_is_playing`` flag extends Stop mode beyond the generation
+        window so the user can interrupt playback the same way they
+        interrupt generation. Cancellation routes through the same
+        ``cancel_generation_requested`` signal — the controller decides
+        whether to call ``cancel_generation()``, ``stop_all_playback()``,
+        or both based on what is actually in flight.
+
+        Story 12.1 Task 4.4: when a SessionRegistry is wired, the
+        indicator-driving half becomes a no-op (registry owns the
+        substate). The Stop-button-mode side-effect (``_is_playing`` flag
+        + ``_refresh_clear_button_mode``) stays active because the Clear/
+        Stop button is NOT driven by the registry — it is driven by
+        local UI state independent of session lifecycle. Suppressing it
+        would break the Stop button's visual feedback.
+        """
+        # Stop-button mode is preserved unconditionally — see docstring.
+        self._is_playing = is_playing
+        self._refresh_clear_button_mode()
+
+    def _refresh_clear_button_mode(self) -> None:
+        """Sync the Clear button's icon / tooltip / accessibility name
+        with the combined (generating or playing) state. Idempotent."""
+        if self._is_generating or self._is_playing:
+            stop_icon = self.style().standardIcon(self.style().StandardPixmap.SP_BrowserStop)
+            self.clear_button.setIcon(stop_icon)
+            tooltip = (
+                "Stop generation" if self._is_generating else "Stop playback"
+            )
+            self.clear_button.setToolTip(tooltip)
+            self.clear_button.setAccessibleName(tooltip)
+            self.clear_button.setAccessibleDescription(
+                "Interrupt the in-flight TTS work; text input is restored"
+            )
+        else:
+            clear_icon = self.style().standardIcon(self.style().StandardPixmap.SP_LineEditClearButton)
+            self.clear_button.setIcon(clear_icon)
+            self.clear_button.setToolTip("Clear text")
+            self.clear_button.setAccessibleName("Clear text")
+            self.clear_button.setAccessibleDescription("Clear the text input field")
+
+    def set_replay_enabled(self, enabled: bool):
+        """
+        Enable or disable the replay last button (Story 2.4: FR29).
+
+        Called when audio is generated to enable replay, or on fresh start
+        to keep it disabled (session-only cache).
+
+        Args:
+            enabled: Whether replay should be enabled
+        """
+        self.replay_button.setEnabled(enabled)
+        if enabled:
+            self.replay_button.setToolTip("Replay last audio (Ctrl+R)")
+        else:
+            self.replay_button.setToolTip("No audio to replay")
+
+    def get_current_settings(self) -> dict:
+        """
+        Get current UI settings.
+
+        Returns:
+            Dictionary with current UI state
+        """
+        current_preset = self.emotion_button_group.get_current_preset()
+        return {
+            'voice': self.current_voice_label.text().replace("Voice: ", ""),
+            'emotion_id': current_preset.id,
+            'emotion_name': current_preset.display_name,
+            'emotion_instruct': current_preset.instruct,
+            'text': self.text_input.toPlainText()
+        }
+
+    # =========================================================================
+    # Story 7.4: Status Indicators (FR42, FR43, FR44)
+    # =========================================================================
+
+    def _setup_default_status_indicators(self):
+        """
+        Setup default TTS and Mic status indicators (Story 7.4).
+
+        Creates indicators for:
+        - TTS: Shows model loading/ready/error state (FR42)
+        - Mic: Shows virtual microphone connection state (FR43)
+        """
+        # Add TTS indicator
+        self.service_status_bar.add_service("TTS")
+
+        # Add Mic indicator
+        self.service_status_bar.add_service("Mic")
+
+        self.logger.debug("Default status indicators (TTS, Mic) created")
+
+    def _on_service_status_clicked(self, service_name: str):
+        """
+        Handle click on a service status indicator (Story 7.4: FR44).
+
+        Args:
+            service_name: Name of the service that was clicked
+        """
+        self.logger.debug(f"Service status clicked: {service_name}")
+
+        # Forward the signal
+        self.service_status_clicked.emit(service_name)
+
+        # Story 7.4 (FR44): Show virtual mic setup guidance when Mic warning is clicked
+        if service_name.lower() == "mic":
+            # Check if mic is in warning state (not detected)
+            mic_indicator = self.service_status_bar.get_indicator("Mic")
+            if mic_indicator:
+                status_info = mic_indicator.get_current_status()
+                if status_info and status_info.health_status == ServiceHealthStatus.WARNING:
+                    self._show_virtual_mic_setup_dialog()
+
+    def _show_virtual_mic_setup_dialog(self):
+        """
+        Show the virtual microphone setup guidance dialog (Story 7.4: FR44).
+        """
+        try:
+            dialog = VirtualMicSetupDialog(self)
+            dialog.exec()
+            self.logger.info("Virtual mic setup dialog shown")
+        except Exception as e:
+            self.logger.error(f"Error showing virtual mic setup dialog: {e}")
+
+    def set_tts_loading(self, is_loading: bool):
+        """
+        Set TTS loading state indicator (Story 7.4: FR42).
+
+        Shows yellow/🟡 indicator while model is loading.
+
+        Args:
+            is_loading: Whether TTS model is currently loading
+        """
+        self.service_status_bar.set_service_loading("TTS", is_loading)
+
+        # Also update tooltip
+        if is_loading:
+            indicator = self.service_status_bar.get_indicator("TTS")
+            if indicator:
+                indicator.setToolTip("Loading voice model...")
+
+        self.logger.debug(f"TTS loading state: {is_loading}")
+
+    def _on_model_loading(self, message: str):
+        """
+        Handle model loading callback from TTS service.
+
+        Shows model switching indicator in status bar and TTS indicator.
+
+        Args:
+            message: Loading message (e.g., "Loading CustomVoice...")
+        """
+        # Update status bar with model loading message
+        self.status_bar.showMessage(f"🔄 {message}")
+
+        # Update TTS indicator to loading state
+        self.service_status_bar.set_service_loading("TTS", True)
+        indicator = self.service_status_bar.get_indicator("TTS")
+        if indicator:
+            indicator.setToolTip(message)
+
+        self.logger.info(f"Model loading: {message}")
+
+    def _on_model_ready(self, model_name: str):
+        """
+        Handle model ready callback from TTS service.
+
+        Updates status bar and TTS indicator to show active model.
+
+        Args:
+            model_name: Name of the loaded model
+        """
+        # Update status bar with ready message
+        self.status_bar.showMessage(f"✓ {model_name} ready", 3000)
+
+        # Update TTS indicator to ready state
+        self.service_status_bar.set_service_loading("TTS", False)
+        indicator = self.service_status_bar.get_indicator("TTS")
+        if indicator:
+            indicator.setToolTip(f"Active model: {model_name}")
+
+        self.logger.info(f"Model ready: {model_name}")
+
+    # ----- Story 12.1: SessionRegistry → TTS indicator wiring -------------- #
+
+    # Map of `SessionState` → status-bar text for the registry-driven path.
+    # Strings preserve V2's user-facing wording (app.py:1862, 1958, 907) so
+    # the rewire is net-zero for what end-users read. ERROR collapses the
+    # legacy chain's per-exception variants into a single string per Open
+    # Question #3; per-error detail is deferred to a future story.
+    #
+    # AI-Review M4 (2026-05-04): PENDING is intentionally absent — the
+    # registry's focal-priority order (session_registry.py:302-335) never
+    # returns a PENDING session as focal, so a row for it is unreachable
+    # dead code that misleads a future reader about the focal contract.
+    _STATE_TEXT_MAP: dict = {
+        SessionState.GENERATING: "Generating speech...",
+        SessionState.READY_TO_PLAY: "Audio ready",
+        SessionState.DONE: "Audio playback completed",
+        SessionState.CANCELLED: "Stopped",
+        SessionState.ERROR: "Generation failed",
+    }
+
+    def _connect_registry_to_indicator(self, registry: SessionRegistry) -> None:
+        """Wire registry signals to the TTS indicator's substate and to the
+        Save button.
+
+        Story 12.1 Task 2.1; extended in Story 14.2 to also wire
+        ``saveable_session_changed`` to the Save button. All connections use
+        explicit ``Qt.ConnectionType.QueuedConnection`` per P-4. The registry
+        emits on the Qt main thread, but the explicit form is a load-bearing
+        convention — auto-inferred connection type is forbidden by the
+        architecture document.
+
+        Signals wired:
+          - ``session_state_changed`` → indicator substate
+          - ``current_session_changed`` → indicator substate
+          - ``playback_queue_depth_changed`` → indicator + queue-depth badge
+          - ``saveable_session_changed`` → Save button enablement (Story 14.2)
+        """
+        registry.session_state_changed.connect(
+            self._on_session_state_changed, Qt.ConnectionType.QueuedConnection
+        )
+        registry.current_session_changed.connect(
+            self._on_current_session_changed, Qt.ConnectionType.QueuedConnection
+        )
+        # Inert until Story 13.1 ships per the registry's module docstring;
+        # subscribing now prevents a follow-up wiring change in 13.4.
+        registry.playback_queue_depth_changed.connect(
+            self._on_playback_queue_depth_changed, Qt.ConnectionType.QueuedConnection
+        )
+        # Story 14.2: saveable_session_changed wires the SaveButton's
+        # enabled state per Story 14.1's saveable-slot lifecycle. Same
+        # explicit QueuedConnection convention as the three signals above.
+        registry.saveable_session_changed.connect(
+            self._on_saveable_session_changed, Qt.ConnectionType.QueuedConnection
+        )
+        # AC #4 — seed initial state from the registry's current saveable
+        # so the button reflects truth without waiting for the next emit
+        # (closes the registry-precedes-window race).
+        self._on_saveable_session_changed(registry.saveable_session_id)
+        # 5-second decay timer (AC #4 case (b)). The registry does NOT emit
+        # on time-based decay — this timer is the UI-side mechanism that
+        # observes `focal_session_id` returning to None after the window.
+        # Headroom of 50ms over the registry's exact decay avoids racing
+        # the boundary in either direction.
+        #
+        # AI-Review M3 (2026-05-04): explicit QueuedConnection per the
+        # story's "load-bearing convention" for registry-driven indicator
+        # plumbing — same convention applied to the three registry signals
+        # above. The timer is same-thread so DirectConnection would also
+        # work, but the explicit form keeps a future reader from "fixing"
+        # the inconsistency in the wrong direction.
+        self._focal_decay_timer = QTimer(self)
+        self._focal_decay_timer.setSingleShot(True)
+        self._focal_decay_timer.timeout.connect(
+            self._redraw_tts_indicator_from_focal,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.logger.debug("Registry → TTS indicator wired with QueuedConnection")
+
+    def _on_session_state_changed(self, session_id: str, new_state) -> None:
+        """Slot for ``SessionRegistry.session_state_changed`` (Task 2.2).
+
+        Re-reads ``focal_session_id`` rather than caching — the focal
+        property recomputes on every read by design (validation gap #1)
+        and the cost is negligible for the V2-expected 1–3 in-flight
+        sessions. Caching would invert the registry's "single source of
+        truth" guarantee.
+        """
+        if self._session_registry is None:
+            return
+        focal = self._session_registry.focal_session_id
+        if session_id != focal:
+            # Non-focal mutation — focal session decides what's drawn. The
+            # focal property may have just been updated by this same
+            # mutation; if the changing session IS the new focal, the
+            # equality check below succeeds and we redraw.
+            return
+        # Restart the decay timer on terminal transitions so the indicator
+        # observes the registry's tier-(c) → None transition (AC #4 case (b)).
+        if new_state in (SessionState.DONE, SessionState.CANCELLED, SessionState.ERROR):
+            if self._focal_decay_timer is not None:
+                # _FOCAL_DECAY_SECONDS + 50ms headroom; derived from the
+                # session_registry constant so a drift in either side stays
+                # in sync without a hand-edit (AI-Review M3, Story 12.3).
+                self._focal_decay_timer.start(_FOCAL_DECAY_TIMER_INTERVAL_MS)
+        self._redraw_tts_indicator_from_focal()
+
+    def _on_current_session_changed(self, focal_id) -> None:
+        """Slot for ``SessionRegistry.current_session_changed`` (Task 2.3).
+
+        Payload is ``Optional[str]`` declared as ``object`` because PyQt6's
+        signal type system cannot express ``Optional[str]`` directly. The
+        registry suppresses spurious None→None re-emissions per
+        ``session_registry.py:387-389``, so a future maintainer must not
+        "optimize" this slot by adding a "did we already see None?" guard
+        — the registry already provides that guarantee.
+
+        AI-Review H3 (2026-05-04): when ``focal_id is None``, the idle
+        paint is *deferred* via ``QTimer.singleShot(0, ...)`` rather than
+        applied synchronously. This addresses the cross-mutation race where
+        ``discard(A)`` (which emits ``current_session_changed(None)``) and
+        ``start_generation(B)`` (which emits ``current_session_changed(B)``)
+        are both queued on the Qt main thread. Without the defer, the
+        ``None`` slot paints idle before ``B``'s slot promotes the new
+        focal — a one-tick idle frame the OFR-D bug fix is supposed to
+        prevent. ``QTimer.singleShot(0, ...)`` re-queues the redraw at the
+        back of the event queue; any already-queued successor emissions
+        run first, and ``_redraw_tts_indicator_from_focal`` then re-reads
+        ``focal_session_id`` and only paints idle if it is *still* ``None``.
+        """
+        if self._session_registry is None:
+            return
+        if focal_id is None:
+            # Defer to the back of the event queue so a successor's
+            # start_generation can promote the new focal first.
+            QTimer.singleShot(0, self._redraw_tts_indicator_from_focal)
+            return
+        self._redraw_tts_indicator_from_focal()
+
+    def _on_playback_queue_depth_changed(self, depth: int) -> None:
+        """Slot for ``SessionRegistry.playback_queue_depth_changed``.
+
+        Story 12.1 Task 2.6 wired this slot inert; Story 13.4 attaches the
+        visible badge. The slot is the single integration point — no other
+        production code calls ``self._queue_depth_badge.set_depth``.
+        Construction in ``_create_ui`` precedes the registry connection in
+        ``_connect_registry_to_indicator``, so the badge is always present
+        by the time this slot fires.
+        """
+        self._queue_depth_badge.set_depth(depth)
+        self._redraw_tts_indicator_from_focal()
+
+    def _on_saveable_session_changed(self, session_id: object) -> None:
+        """Slot for ``SessionRegistry.saveable_session_changed`` (Story 14.2).
+
+        Re-reads ``saveable_audio`` from the registry rather than
+        constructing the audio snapshot from the payload — Story 14.1's
+        contract (AC #2) is that ``saveable_session_changed.emit(id_or_None)``
+        fires AFTER the slot promotion or revert, so by the time this slot
+        runs the property is already in its post-mutation state. Re-reading
+        keeps the button in sync even in the rare case where two emissions
+        queue and the second one's payload would otherwise lose to the first.
+
+        ``session_id`` is annotated ``object`` because PyQt6's signal type
+        system cannot express ``Optional[str]`` directly; the registry's
+        signal payload is in fact ``Optional[str]``.
+        """
+        if self._session_registry is None:
+            return
+        audio = self._session_registry.saveable_audio
+        self.save_button.set_saveable(audio)
+        # Story 15.2: the Clear Comms button's "use last generation" branch
+        # gates on ``has_saveable``, so a saveable promotion or revert
+        # propagates to its enablement on the same tick as the Save button.
+        self._on_clear_comms_state_changed()
+
+    def _on_save_clicked(self) -> None:
+        """Click handler for the Save button (Story 14.2).
+
+        Emits ``save_requested`` for downstream consumers (Story 14.3 wires
+        the file dialog). Emits unconditionally — the button's enabled/
+        disabled state is the gate, and ``QToolButton.click()`` only fires
+        when enabled.
+        """
+        self.save_requested.emit()
+        self.logger.debug("Save button clicked; save_requested emitted")
+
+    # --- Story 15.2: Clear Comms button wiring ----------------------- #
+
+    def _on_clear_comms_button_clicked(self) -> None:
+        """Click handler for the Clear Comms button (Story 15.2).
+
+        Emits ``clear_comms_requested`` for ``MyVoiceApp`` to consume.
+        Emits unconditionally — ``QPushButton.click()`` honors the
+        button's enabled/disabled gate, so a disabled click cannot
+        reach this slot.
+        """
+        self.clear_comms_requested.emit()
+        self.logger.debug(
+            "Clear Comms button clicked; clear_comms_requested emitted"
+        )
+
+    def set_clear_comms_config_snapshot(
+        self,
+        *,
+        source_kind: str,
+        file_path: Optional[str],
+        file_path_valid: bool,
+        queue_mode: bool,
+    ) -> None:
+        """Cache the Clear Comms config and refresh button enablement.
+
+        Public API consumed by Story 15.3's settings panel: when the
+        user saves Clear Comms config, the panel calls this method
+        with the four scalar inputs the button needs. ``MainWindow``
+        does NOT itself probe the filesystem — the panel owns the
+        load test (using Story 15.1's loader); this method just
+        accepts the panel's verdict.
+
+        Story 15.2 also calls this from ``set_app_settings`` to seed
+        the snapshot from the persisted ``AppSettings`` on first
+        paint. The initial validity check uses a synchronous
+        ``Path.is_file()`` probe (not a soundfile open) — fast enough
+        for the click-driven path and correct because there is no
+        panel yet to drive a richer probe.
+        """
+        self._clear_comms_source_kind = source_kind
+        self._clear_comms_file_path = file_path
+        self._clear_comms_file_path_valid = file_path_valid
+        self._clear_comms_queue_mode = queue_mode
+        self._on_clear_comms_state_changed()
+
+    def _on_clear_comms_state_changed(self) -> None:
+        """Recompute and apply ClearCommsButton enablement.
+
+        Reads the cached Clear Comms config snapshot plus the
+        registry's ``saveable_session_id``; calls
+        ``ClearCommsButton.set_state`` with the four computed inputs
+        per AC #6.
+
+        Safe to call before ``app_settings`` or the registry are
+        wired — the cached defaults (``"last_generation"``, no file,
+        interrupt mode) and ``has_saveable=False`` produce the
+        disabled-no-saveable initial state, which matches the button's
+        own construction default.
+        """
+        if not hasattr(self, "clear_comms_button"):
+            # Defensive: this slot can be called via
+            # _on_saveable_session_changed during construction before
+            # _create_ui finishes wiring the button. Skip silently.
+            return
+        has_saveable = (
+            self._session_registry is not None
+            and self._session_registry.saveable_session_id is not None
+        )
+        self.clear_comms_button.set_state(
+            source_kind=self._clear_comms_source_kind,
+            has_saveable=has_saveable,
+            file_path_valid=self._clear_comms_file_path_valid,
+            queue_mode=self._clear_comms_queue_mode,
+        )
+
+    def _redraw_tts_indicator_from_focal(self) -> None:
+        """Project the registry's focal session onto the TTS indicator (Task 2.4).
+
+        Idempotent — safe to call from multiple slots in the same Qt event
+        tick. Do NOT add a "did I already redraw this tick" guard; the cost
+        is one dict lookup and the safety margin is worth it (architecture
+        doc P-4 commentary on Task 2 of the story).
+        """
+        if self._session_registry is None:
+            return
+        focal = self._session_registry.focal_session_id
+        if focal is None:
+            self.service_status_bar.set_service_pulsing("TTS", False)
+            self.status_bar.showMessage(self._get_ready_message())
+            return
+        session = self._session_registry.get(focal)
+        if session is None:
+            # Race: discarded between focal compute and get(). Treat as no focal.
+            self.service_status_bar.set_service_pulsing("TTS", False)
+            self.status_bar.showMessage(self._get_ready_message())
+            return
+
+        state = session.state
+        is_audible = session.is_audible
+
+        # Pulsing rule (AC #2): on while focal is GENERATING or READY_TO_PLAY,
+        # OR while PLAYING and not yet audible (the indicator is still
+        # "working" in that frame). Off once the audio is actually playing.
+        pulsing = (
+            state in (SessionState.GENERATING, SessionState.READY_TO_PLAY)
+            or (state == SessionState.PLAYING and not is_audible)
+        )
+        self.service_status_bar.set_service_pulsing("TTS", pulsing)
+
+        # Status text. PLAYING has two flavors based on `is_audible`.
+        if state == SessionState.PLAYING:
+            text = (
+                "Playing audio on speakers and virtual microphone"
+                if is_audible
+                else "Starting playback..."
+            )
+        elif state == SessionState.DISCARDED:
+            # Focal cannot include DISCARDED (the registry deletes the
+            # entry in `discard()`), but be defensive — fall back to ready.
+            text = self._get_ready_message()
+        else:
+            text = self._STATE_TEXT_MAP.get(state, self._get_ready_message())
+        self.status_bar.showMessage(text)
+
+    def set_generation_pulsing(self, enabled: bool):
+        """
+        Set generation progress pulsing animation (Story 7.4).
+
+        Shows pulsing indicator during TTS generation.
+
+        Story 12.1 Task 4.4: when a SessionRegistry is wired, this method
+        becomes a no-op — the registry-driven path
+        (``_redraw_tts_indicator_from_focal``) owns the pulsing substate.
+        The method stays callable for D-14 wire-compat (legacy tests and
+        residual app.py call sites continue to work) but no longer drives
+        the indicator. AC #1: "removed from the indicator-driving path"
+        means the indicator no longer *consumes* this method, not that
+        the method is deleted.
+
+        Args:
+            enabled: Whether generation is in progress
+        """
+        if self._session_registry is not None:
+            # Registry path is the single source of truth for pulsing
+            # substate. Suppress legacy writes to avoid two sources fighting
+            # over the same indicator state.
+            return
+        self.service_status_bar.set_service_pulsing("TTS", enabled)
+        self.logger.debug(f"TTS pulsing: {enabled}")
+
+    def update_virtual_mic_status(self, is_connected: bool, device_name: Optional[str] = None):
+        """
+        Update virtual microphone status indicator (Story 7.4: FR43).
+
+        Args:
+            is_connected: Whether a virtual microphone is connected
+            device_name: Name of the connected device (if any)
+        """
+        from myvoice.models.service_enums import ServiceStatus
+
+        if is_connected:
+            status_info = ServiceStatusInfo(
+                service_name="Mic",
+                status=ServiceStatus.RUNNING,
+                health_status=ServiceHealthStatus.HEALTHY,
+                error_message=None
+            )
+            tooltip = f"Virtual microphone connected: {device_name}" if device_name else "Virtual microphone connected"
+        else:
+            status_info = ServiceStatusInfo(
+                service_name="Mic",
+                status=ServiceStatus.RUNNING,
+                health_status=ServiceHealthStatus.WARNING,
+                error_message="Virtual microphone not detected"
+            )
+            tooltip = "Virtual microphone not detected. Click for setup help."
+
+        self.service_status_bar.update_service_status("Mic", status_info)
+
+        # Update tooltip
+        indicator = self.service_status_bar.get_indicator("Mic")
+        if indicator:
+            indicator.setToolTip(tooltip)
+
+        self.logger.debug(f"Virtual mic status: connected={is_connected}, device={device_name}")
+
+    def add_service_monitoring(self, service_name: str):
+        """
+        Add a service to the status monitoring display.
+
+        Args:
+            service_name: Name of the service to monitor
+        """
+        self.service_status_bar.add_service(service_name)
+        self.logger.debug(f"Added service monitoring for {service_name}")
+
+    def update_service_status(self, service_name: str, status_info: ServiceStatusInfo):
+        """
+        Update the status of a monitored service.
+
+        Args:
+            service_name: Name of the service
+            status_info: Updated status information
+        """
+        # Update UI state
+        self.ui_state.update_service_status(
+            service_name,
+            status_info.status,
+            status_info.health_status,
+            status_info.error_message
+        )
+
+        # Update status bar indicator
+        self.service_status_bar.update_service_status(service_name, status_info)
+
+        # Track TTS availability specifically
+        if service_name.lower() == "tts":
+            old_tts_available = self._tts_available
+            self._tts_available = (status_info.health_status == ServiceHealthStatus.HEALTHY)
+
+            # If TTS availability changed, always update the ready message
+            if old_tts_available != self._tts_available:
+                self.status_bar.showMessage(self._get_ready_message())
+
+        # Update main status message based on overall health
+        overall_health = self.service_status_bar.get_overall_health()
+        if overall_health == ServiceHealthStatus.ERROR:
+            self.status_bar.showMessage("Service issues detected", 5000)
+        elif overall_health == ServiceHealthStatus.WARNING:
+            self.status_bar.showMessage("Service warnings", 3000)
+
+        self.logger.debug(f"Updated service status for {service_name}: {status_info.status_display}")
+
+    def show_service_notification(self, title: str, message: str, severity: str = "info"):
+        """
+        Show a service-related notification to the user.
+
+        Args:
+            title: Notification title
+            message: Notification message
+            severity: Message severity (info, warning, error)
+        """
+        # For now, show in status bar (could be enhanced with popup notifications)
+        if severity == "error":
+            self.status_bar.showMessage(f"Error: {message}", 10000)
+        elif severity == "warning":
+            self.status_bar.showMessage(f"Warning: {message}", 5000)
+        else:
+            self.status_bar.showMessage(message, 3000)
+
+        self.logger.info(f"Service notification: {title} - {message}")
+
+    def get_ui_state(self) -> UIState:
+        """
+        Get the current UI state.
+
+        Returns:
+            UIState: Current UI state object
+        """
+        # Update current values
+        self.ui_state.last_text_input = self.text_input.toPlainText()
+        self.ui_state.selected_voice = self.current_voice_label.text().replace("Voice: ", "")
+        # Store emotion preset index for persistence
+        current_preset = self.emotion_button_group.get_current_preset()
+        preset_list = list(EmotionPreset)
+        self.ui_state.emotion_position = preset_list.index(current_preset) if current_preset in preset_list else 0
+        self.ui_state.window_visible = self.isVisible()
+
+        return self.ui_state
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """
+        Handle key press events.
+
+        Handles:
+        - ESC: Clear text input
+        - Ctrl+R: Replay last audio (Story 2.4: FR28)
+        - Ctrl+S: Open Settings (Story 6.1: FR40)
+        - Ctrl+M: Toggle microphone mute (when mic mixing enabled)
+        - F1-F5: Emotion keyboard shortcuts (Story 3.5: FR6)
+          - F1: Neutral, F2: Happy, F3: Sad, F4: Angry, F5: Flirtatious
+          - Window-scoped (works even when text input focused)
+          - No effect when emotion disabled (cloned voice)
+          - No effect in dialogs (only main window)
+
+        Args:
+            event: Key event
+        """
+        key = event.key()
+
+        # Clear text input when ESC is pressed
+        if key == Qt.Key.Key_Escape:
+            self.text_input.clear()
+            self.logger.debug("Text input cleared via ESC key")
+            return
+
+        # Story 2.4: Ctrl+R to replay last audio
+        if key == Qt.Key.Key_R and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if self.replay_button.isEnabled():
+                self._on_replay_last_clicked()
+                self.logger.debug("Replay triggered via Ctrl+R")
+            else:
+                self.status_bar.showMessage("No audio to replay", 2000)
+                self.logger.debug("Ctrl+R ignored: no cached audio")
+            return
+
+        # Story 6.1: Ctrl+S to open Settings (FR40)
+        if key == Qt.Key.Key_S and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self._on_settings_clicked()
+            self.logger.debug("Settings opened via Ctrl+S")
+            return
+
+        # Microphone mute toggle: Ctrl+M
+        if key == Qt.Key.Key_M and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if hasattr(self, 'mic_control_widget') and self.mic_control_widget.isVisible():
+                self.toggle_mic_mute()
+                self.logger.debug("Mic mute toggled via Ctrl+M")
+            return
+
+        # Story 3.5: F1-F5 Emotion Keyboard Shortcuts
+        # Maps F1-F5 to emotion indices 0-4
+        emotion_key_map = {
+            Qt.Key.Key_F1: 0,  # Neutral
+            Qt.Key.Key_F2: 1,  # Happy
+            Qt.Key.Key_F3: 2,  # Sad
+            Qt.Key.Key_F4: 3,  # Angry
+            Qt.Key.Key_F5: 4,  # Flirtatious
+        }
+
+        if key in emotion_key_map:
+            # Check if emotion control is enabled (not disabled for cloned voices)
+            if self.emotion_button_group.is_emotion_enabled():
+                emotion_index = emotion_key_map[key]
+                success = self.set_emotion_by_index(emotion_index)
+                if success:
+                    preset = self.emotion_button_group.get_current_preset()
+                    self.logger.debug(f"Emotion shortcut {event.text()}: {preset.display_name}")
+            else:
+                # Emotion disabled (cloned voice) - shortcut has no effect (AC8)
+                self.logger.debug(f"Emotion shortcut {event.text()} ignored: emotion control disabled")
+            return
+
+        # Pass other key events to parent
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event: QCloseEvent):
+        """
+        Handle window close event (Story 7.2: FR38).
+
+        If minimize_to_tray is enabled and _force_quit is False,
+        minimizes to system tray instead of closing.
+        Otherwise, performs proper cleanup and closes.
+
+        Args:
+            event: Close event
+        """
+        # Story 18.3 measurement-mode bypass — when MYVOICE_AUTO_QUIT_ON_CLOSE=1
+        # is set in the environment, clicking the window's X button performs
+        # an immediate clean close: no tray-minimize, no confirmation dialog.
+        # Used by the NFR1 measurement bats (03_*.bat / 04_*.bat) so a 10-launch
+        # loop can advance without manual right-click-tray-Exit + dialog
+        # confirmation per iteration. Production behavior is unchanged when
+        # the env var is unset (the memory note in
+        # `main_window_close_confirm_dialog_in_tests.md` requires NOT
+        # weakening the dialog itself — env-var-gated bypass is opt-in).
+        import os as _os_mod
+        measurement_mode = _os_mod.environ.get("MYVOICE_AUTO_QUIT_ON_CLOSE") == "1"
+        if measurement_mode:
+            self._force_quit = True
+            self.logger.debug(
+                "MYVOICE_AUTO_QUIT_ON_CLOSE=1 — bypassing tray-minimize + confirm dialog"
+            )
+
+            # Story 18.3 M2 follow-up — Commander reported hit-or-miss
+            # cut-off-at-end during NFR1 measurement runs. Root cause: when
+            # the user clicks X immediately after generation completes, the
+            # close cascade (aboutToQuit → _cleanup_services →
+            # _audio_coordinator.stop()) tears down the PyAudio streams
+            # while the chunk-handler's `await asyncio.sleep(drain_wait)`
+            # is still in flight → drain await is cancelled mid-sleep →
+            # un-played audio in the buffer is lost.
+            #
+            # Fix: in measurement mode, synchronously process Qt events
+            # for up to (drain_wait + safety_buffer) so the qasync loop
+            # can finish the in-flight drain before close proceeds. Uses
+            # QApplication.processEvents() in a brief loop — the asyncio
+            # tasks running on the qasync event loop get CPU time to
+            # complete the drain. Production behavior unchanged (only
+            # fires when AUTO_QUIT_ON_CLOSE=1).
+            try:
+                self._wait_for_pending_audio_drain()
+            except Exception:
+                self.logger.warning(
+                    "Measurement-mode drain wait raised (non-fatal)",
+                    exc_info=True,
+                )
+
+        # Story 7.2: Check if we should minimize to tray instead of closing
+        should_minimize_to_tray = (
+            not self._force_quit and
+            self.tray_icon is not None and
+            self.app_settings is not None and
+            self.app_settings.minimize_to_tray
+        )
+
+        if should_minimize_to_tray:
+            # Minimize to tray instead of closing
+            event.ignore()
+            self._minimize_to_tray()
+            self.logger.debug("Close event ignored - minimized to tray")
+            return
+
+        # QA4-3: Show confirmation dialog unless force quit (from tray Exit)
+        if not self._force_quit:
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self,
+                "Close MyVoice",
+                "Are you sure you wish to close MyVoice?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                self.logger.debug("Close cancelled by user")
+                return
+
+        # Actual close - perform cleanup
+        self.logger.info("MainWindow closing")
+
+        try:
+            # Hide tray icon if exists
+            if self.tray_icon:
+                self.tray_icon.hide()
+
+            # Stop auto-save timer
+            if hasattr(self, '_auto_save_timer'):
+                self._auto_save_timer.stop()
+
+            # Cleanup voice selector
+            if hasattr(self, 'voice_selector'):
+                self.voice_selector.cleanup()
+
+            # Cleanup service status bar timers
+            if hasattr(self, 'service_status_bar'):
+                self.service_status_bar.cleanup_all_services()
+
+            # Cleanup background processes (launcher)
+            self._cleanup_background_processes()
+
+            # TODO: Save window geometry and state when configuration service is ready
+
+            # Accept the close event
+            event.accept()
+
+        except Exception as e:
+            self.logger.exception(f"Error during window close: {e}")
+            event.accept()  # Close anyway to prevent hanging
+
+    def _wait_for_pending_audio_drain(self) -> None:
+        """Block briefly so any in-flight audio drain can finish before close.
+
+        Story 18.3 M2 follow-up — measurement-mode close-race fix.
+
+        When ``MYVOICE_AUTO_QUIT_ON_CLOSE=1`` and the user clicks X right
+        after generation completes, the asyncio task in
+        ``app._handle_progressive_chunk_async`` may be sitting on
+        ``await asyncio.sleep(drain_wait)`` inside
+        ``audio_coordinator.stop_streaming_session(wait_for_drain=True)``.
+        If we let closeEvent return immediately, ``aboutToQuit`` fires →
+        ``_cleanup_services`` → ``_audio_coordinator.stop()`` tears down
+        the PyAudio streams while the drain is still in flight → audio
+        cuts off.
+
+        Fix: read the AudioCoordinator's drain-wait math directly and
+        spin Qt's event loop (``processEvents``) for up to that long, so
+        the qasync loop processes the drain task to completion before
+        cleanup proceeds. Bounded by the AudioCoordinator's own
+        ``_MAX_DRAIN_WAIT_S`` so we can't hang.
+
+        Production behavior is unchanged (this method is only called when
+        the env-var-gated measurement-mode bypass is engaged).
+        """
+        import time as _time
+        from PyQt6.QtCore import QCoreApplication
+
+        # MainWindow holds the AudioCoordinator via `set_audio_coordinator`
+        # (line ~2560) which stamps `self.audio_coordinator`. Walk defensively
+        # so a test harness or partially-initialized state doesn't crash
+        # the close path.
+        coord = getattr(self, "audio_coordinator", None)
+        if coord is None:
+            self.logger.debug(
+                "Measurement-mode drain wait: no AudioCoordinator reachable; skipping"
+            )
+            return
+
+        # Story 18.3 M6 — read the LAST-chunk trackers, not the FIRST. The
+        # full-stream math (expected_total - elapsed) goes negative on
+        # producer-bottleneck workloads and skipped the drain entirely;
+        # mirroring the corrected math in stop_streaming_session.
+        last_write_ts = getattr(coord, "_stream_last_write_ts", None)
+        last_chunk_bytes = getattr(coord, "_stream_last_chunk_bytes", 0)
+        sample_rate = getattr(coord, "_tts_sample_rate", None)
+        sample_width = getattr(coord, "_stream_sample_width", 2)
+        channels = getattr(coord, "_stream_channels", 1)
+
+        if last_write_ts is None or sample_rate is None or last_chunk_bytes <= 0:
+            # No active streaming session, or no chunks were written.
+            return
+
+        bytes_per_second = sample_rate * max(channels, 1) * max(sample_width, 1)
+        if bytes_per_second <= 0:
+            return
+
+        max_cap = getattr(coord, "_MAX_DRAIN_WAIT_S", 15.0)
+        safety = getattr(coord, "_DRAIN_SAFETY_BUFFER_S", 0.5)
+        last_chunk_duration_s = last_chunk_bytes / bytes_per_second
+        time_since_last_write = _time.monotonic() - last_write_ts
+        last_chunk_remaining = max(0.0, last_chunk_duration_s - time_since_last_write)
+        drain_wait = min(last_chunk_remaining + safety, max_cap)
+        self.logger.info(
+            "Measurement-mode drain wait: holding close for %.3fs "
+            "(last_chunk_remaining=%.3fs, safety=%.3fs, cap=%.3fs)",
+            drain_wait, last_chunk_remaining, safety, max_cap,
+        )
+
+        # Spin Qt's event loop so the qasync drain task gets CPU time.
+        # This processes both Qt and asyncio events because qasync
+        # interleaves them on the same loop. Sleep in 10ms chunks so we
+        # remain responsive (the user could click cancel mid-drain in
+        # principle; in measurement mode there's no cancel surface, but
+        # the chunked sleep is good practice).
+        deadline = _time.monotonic() + drain_wait
+        while _time.monotonic() < deadline:
+            QCoreApplication.processEvents()
+            _time.sleep(0.01)
+
+        self.logger.debug("Measurement-mode drain wait completed")
+
+    def _cleanup_background_processes(self):
+        """
+        Terminate background processes spawned by launcher.
+
+        This terminates any tracked processes using PID files created during startup.
+        """
+        import os
+        import subprocess
+        import tempfile
+
+        temp_dir = tempfile.gettempdir()
+
+        # PID files to check
+        pid_files = [
+            os.path.join(temp_dir, "myvoice_splash.pid"),
+        ]
+
+        for pid_file in pid_files:
+            try:
+                if os.path.exists(pid_file):
+                    with open(pid_file, 'r') as f:
+                        pid = f.read().strip()
+
+                    if pid and pid.isdigit():
+                        self.logger.info(f"Terminating process with PID: {pid}")
+                        # Use taskkill with /T to terminate process tree, /F for force
+                        subprocess.run(
+                            ['taskkill', '/PID', pid, '/T', '/F'],
+                            capture_output=True,
+                            timeout=5
+                        )
+
+                    # Remove PID file
+                    os.remove(pid_file)
+                    self.logger.debug(f"Cleaned up PID file: {pid_file}")
+
+            except Exception as e:
+                # Log but don't fail - cleanup is best-effort
+                self.logger.warning(f"Failed to cleanup process from {pid_file}: {e}")
+
+        self.logger.info("Background process cleanup completed")
+
+    def show_and_raise(self):
+        """Show the window and bring it to front."""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.text_input.setFocus()
+
+    # Settings Management
+    def set_audio_coordinator(self, audio_coordinator):
+        """
+        Set the audio coordinator for dual-service architecture.
+
+        Args:
+            audio_coordinator: AudioCoordinator instance
+        """
+        self.audio_coordinator = audio_coordinator
+        self.logger.debug("Audio coordinator set for MainWindow")
+
+    def set_app_settings(self, app_settings: AppSettings):
+        """
+        Set the application settings instance.
+
+        Args:
+            app_settings: AppSettings instance
+        """
+        self.app_settings = app_settings
+        self.logger.debug("App settings set for MainWindow")
+
+        # Initialize Quick Speak service
+        self.quick_speak_service = QuickSpeakService(app_settings.config_directory)
+        self.quick_speak_service.load_entries()
+
+        # Apply theme from settings
+        self.apply_theme_from_settings()
+
+        # Apply always-on-top setting
+        self.set_always_on_top(app_settings.always_on_top)
+
+        # Story 7.3: Apply window transparency on startup (FR41)
+        self.set_window_transparency(app_settings.window_transparency)
+
+        # Story 15.2: seed the Clear Comms button's enablement snapshot from
+        # the persisted AppSettings. The synchronous Path.is_file() probe is
+        # the v1 validity check per AC #6 (panel-driven richer probes will
+        # land in Story 15.3). On first launch the file path is None, so the
+        # validity check shortcuts to False and the button stays in its
+        # disabled-no-saveable / disabled-file-missing state until either a
+        # generation completes or the panel writes a valid file path.
+        # Review fix M1+M2: wrap is_file() in try/except OSError — on
+        # Windows, is_file() can raise on malformed/over-long/invalid-Unicode
+        # paths that survived a corrupt settings JSON, and we don't want app
+        # startup to crash because of it. Mirrors the loader's defensive
+        # stat probe in clear_comms_settings_panel.load_preloaded_audio_source.
+        cc_path = app_settings.clear_comms_file_path
+        if cc_path:
+            try:
+                cc_path_valid = Path(cc_path).is_file()
+            except OSError:
+                self.logger.warning(
+                    "Clear Comms file path is invalid at startup; treating as missing: %s",
+                    cc_path,
+                )
+                cc_path_valid = False
+        else:
+            cc_path_valid = False
+        self.set_clear_comms_config_snapshot(
+            source_kind=app_settings.clear_comms_source_kind,
+            file_path=cc_path,
+            file_path_valid=cc_path_valid,
+            queue_mode=app_settings.clear_comms_queue_mode,
+        )
+
+    def set_always_on_top(self, always_on_top: bool):
+        """
+        Set the always-on-top behavior of the window.
+
+        Args:
+            always_on_top: Whether to keep window always on top
+        """
+        try:
+            # Base frameless window flags
+            base_flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
+
+            if always_on_top:
+                # Add the always on top flag
+                new_flags = base_flags | Qt.WindowType.WindowStaysOnTopHint
+            else:
+                # Keep just the base frameless flags
+                new_flags = base_flags
+
+            current_flags = self.windowFlags()
+
+            # Only update if flags actually changed
+            if new_flags != current_flags:
+                # Store current geometry before changing flags
+                current_geometry = self.geometry()
+
+                # Pre-apply theme before flag change to ensure it's in memory
+                self._force_theme_reapplication()
+
+                # Set flag to indicate theme needs reapplication
+                self._needs_theme_reapplication = True
+
+                # Hide window before flag change to minimize visual glitches
+                self.hide()
+
+                self.setWindowFlags(new_flags)
+                self.show()  # Required to apply flag changes
+
+                # Restore geometry
+                self.setGeometry(current_geometry)
+
+                # Apply theme immediately after show
+                self._force_theme_reapplication()
+
+                # Schedule multiple theme applications to ensure consistency
+                QTimer.singleShot(1, self._force_theme_reapplication)
+                QTimer.singleShot(10, self._force_theme_reapplication)
+                QTimer.singleShot(50, self._force_theme_reapplication)
+                QTimer.singleShot(100, self._force_theme_reapplication)
+
+                # Ensure window is properly activated and focused
+                self.activateWindow()
+                self.raise_()
+
+                self.logger.debug(f"Set always-on-top to: {always_on_top} with aggressive theme reapplication")
+
+        except Exception as e:
+            self.logger.error(f"Error setting always-on-top: {e}")
+
+    def set_window_transparency(self, opacity: float):
+        """
+        Set the window transparency (Story 7.3: FR41).
+
+        Args:
+            opacity: Window opacity value (0.2-1.0)
+                     0.2 = 20% opaque (80% transparent)
+                     1.0 = 100% opaque (fully visible)
+        """
+        try:
+            # Enforce minimum 20% opacity (maximum 80% transparency)
+            # This ensures the window is never fully invisible
+            clamped_opacity = max(0.2, min(1.0, opacity))
+
+            self.setWindowOpacity(clamped_opacity)
+
+            self.logger.debug(f"Set window transparency to: {clamped_opacity * 100:.0f}%")
+
+        except Exception as e:
+            self.logger.error(f"Error setting window transparency: {e}")
+
+    def _on_transparency_preview(self, opacity: float):
+        """
+        Handle real-time transparency preview from settings dialog (Story 7.3).
+
+        Called when user moves the transparency slider to provide immediate
+        visual feedback without needing to apply settings.
+
+        Args:
+            opacity: Window opacity value (0.2-1.0)
+        """
+        self.set_window_transparency(opacity)
+
+    def _on_settings_clicked(self):
+        """Handle settings button click."""
+        try:
+            if not self.app_settings:
+                self.status_bar.showMessage("Settings not available", 3000)
+                return
+
+            # Create settings dialog if not exists
+            if not self.settings_dialog:
+                # Get audio_client from audio_coordinator for smart device matching
+                audio_client = None
+                if self.audio_coordinator and hasattr(self.audio_coordinator, 'monitor_service'):
+                    if hasattr(self.audio_coordinator.monitor_service, 'windows_audio_client'):
+                        audio_client = self.audio_coordinator.monitor_service.windows_audio_client
+
+                self.settings_dialog = SettingsDialog(
+                    self.app_settings,
+                    self,
+                    self.quick_speak_service,
+                    audio_client=audio_client
+                )
+
+                # Connect signals
+                self.settings_dialog.settings_changed.connect(self._on_settings_changed)
+                self.settings_dialog.settings_changed.connect(self.settings_changed.emit)
+                self.settings_dialog.device_refresh_requested.connect(self._on_device_refresh_requested)
+                self.settings_dialog.device_test_requested.connect(self.audio_device_test_requested.emit)
+                self.settings_dialog.virtual_device_test_requested.connect(self.virtual_device_test_requested.emit)
+                self.settings_dialog.voice_directory_changed.connect(self._on_voice_directory_changed)
+                self.settings_dialog.voice_refresh_requested.connect(self._on_voice_refresh_requested)
+                self.settings_dialog.voice_transcription_requested.connect(self._on_voice_transcription_requested)
+                self.settings_dialog.quick_speak_entries_changed.connect(self._on_quick_speak_entries_changed)
+                self.settings_dialog.voice_changed.connect(self._on_voice_changed_from_settings)
+                # Custom emotion signal (Story 3.4)
+                self.settings_dialog.custom_emotion_applied.connect(self._on_custom_emotion_applied)
+                # Transparency preview signal (Story 7.3)
+                self.settings_dialog.transparency_preview_requested.connect(self._on_transparency_preview)
+                # Voice creation/deletion signals (Story 4.2: Voice Design Creation Workflow)
+                self.settings_dialog.voice_created.connect(self._on_voice_created_from_settings)
+                self.settings_dialog.voice_deleted.connect(self._on_voice_deleted_from_settings)
+                # Microphone input device refresh signal
+                self.settings_dialog.mic_device_refresh_requested.connect(
+                    self.mic_device_refresh_requested.emit
+                )
+                # Microphone monitor toggle signal
+                self.settings_dialog.mic_monitor_toggled.connect(
+                    self.mic_monitor_toggled.emit
+                )
+                # Story 15.3: Clear Comms Test Playback signal forward.
+                self.settings_dialog.clear_comms_test_playback_requested.connect(
+                    self.clear_comms_test_playback_requested.emit
+                )
+            else:
+                # Update with current settings
+                self.settings_dialog.current_settings = AppSettings.from_dict(self.app_settings.to_dict())
+                self.settings_dialog._load_current_settings()
+
+            # Set voice manager on settings dialog
+            if self.voice_manager:
+                self.settings_dialog.set_voice_manager(self.voice_manager)
+
+            # Set TTS service on settings dialog for voice creation dialogs
+            # Always call to ensure buttons are in correct state (enabled if TTS ready, disabled if not)
+            self.settings_dialog.set_tts_service(self.tts_service)
+            self.logger.debug(f"Set TTS service on settings dialog: tts_service={'available' if self.tts_service else 'None'}")
+
+            # Set Whisper service on settings dialog for transcription (QA3 fix)
+            if hasattr(self, 'whisper_service') and self.whisper_service:
+                self.settings_dialog.set_whisper_service(self.whisper_service)
+                self.logger.debug(f"Set Whisper service on settings dialog")
+
+            # Populate device list if audio manager is available
+            # CRITICAL: This must happen BEFORE showing the dialog so dropdowns are populated
+            if self.audio_coordinator:
+                self.logger.info("Populating device lists in settings dialog")
+                self._populate_device_list()
+            else:
+                self.logger.warning("Audio coordinator not available, cannot populate device lists")
+
+            # QA Round 2 Item #5: Always refresh voice list before showing dialog
+            # This ensures newly saved voices from VDS are visible
+            self.settings_dialog.refresh_voice_list()
+
+            # Show dialog (Story 6.1: FR40)
+            self.settings_dialog.exec()
+
+            # Story 6.1: Return focus to text input after settings closes
+            self.text_input.setFocus()
+            self.logger.debug("Focus returned to text input after settings closed")
+
+        except Exception as e:
+            self.logger.error(f"Error opening settings dialog: {e}")
+            self.status_bar.showMessage("Error opening settings", 3000)
+
+    def _on_voice_design_studio_clicked(self):
+        """
+        Handle Voice Design Studio menu action (Story 1.2: FR1).
+
+        Opens the Voice Design Studio dialog for creating voices
+        from descriptions or audio samples with acoustic embeddings.
+        """
+        try:
+            self.logger.debug("Opening Voice Design Studio")
+
+            # Create dialog if not exists
+            if not self.voice_design_studio_dialog:
+                self.voice_design_studio_dialog = VoiceDesignStudioDialog(self)
+
+                # Connect signals
+                self.voice_design_studio_dialog.voice_saved.connect(
+                    self._on_voice_saved_from_design_studio
+                )
+                self.voice_design_studio_dialog.dialog_closing.connect(
+                    self._on_voice_design_studio_closing
+                )
+
+            # Show dialog
+            self.voice_design_studio_dialog.exec()
+
+            # QA3-3: Refresh voice list AFTER dialog closes (not on save)
+            # This ensures save operation completes before refresh
+            self.voice_refresh_requested.emit()
+
+            # Return focus to text input after dialog closes
+            self.text_input.setFocus()
+            self.logger.debug("Focus returned to text input after Voice Design Studio closed")
+
+        except Exception as e:
+            self.logger.error(f"Error opening Voice Design Studio: {e}")
+            self.status_bar.showMessage("Error opening Voice Design Studio", 3000)
+
+    def _on_voice_saved_from_design_studio(self, voice_name: str):
+        """
+        Handle voice saved signal from Voice Design Studio.
+
+        Args:
+            voice_name: Name of the saved voice
+        """
+        self.logger.info(f"Voice saved from Design Studio: {voice_name}")
+        self.status_bar.showMessage(f"Voice '{voice_name}' saved successfully", 5000)
+        # QA3-3: Don't refresh here - refresh happens after dialog closes
+
+    def _on_voice_design_studio_closing(self, has_unsaved_work: bool):
+        """
+        Handle Voice Design Studio closing signal.
+
+        Args:
+            has_unsaved_work: True if there is unsaved work being discarded
+        """
+        if has_unsaved_work:
+            self.logger.debug("Voice Design Studio closed with unsaved work")
+        else:
+            self.logger.debug("Voice Design Studio closed")
+
+    def _on_device_refresh_requested(self):
+        """Handle device refresh request from settings dialog."""
+        try:
+            self.audio_device_refresh_requested.emit()
+
+            # Refresh device list after a short delay
+            QTimer.singleShot(1000, self._populate_device_list)
+
+        except Exception as e:
+            self.logger.error(f"Error refreshing device list: {e}")
+
+    def _populate_device_list(self):
+        """Populate device list in settings dialog using device refresh mechanism."""
+        try:
+            if not self.audio_coordinator:
+                self.logger.error("Cannot populate device list: audio_coordinator is None")
+                return
+
+            if not self.settings_dialog:
+                self.logger.error("Cannot populate device list: settings_dialog is None")
+                return
+
+            self.logger.info("Triggering device refresh for settings dialog")
+
+            # Instead of trying to enumerate ourselves (which causes event loop issues),
+            # trigger the existing device refresh mechanism which works correctly
+            self.audio_device_refresh_requested.emit()
+
+            self.logger.info("Device refresh signal emitted successfully")
+
+        except Exception as e:
+            self.logger.error(f"Error populating device list: {e}", exc_info=True)
+
+    def update_settings(self, new_settings: AppSettings):
+        """
+        Update the current application settings.
+
+        Args:
+            new_settings: New settings to apply
+        """
+        self.app_settings = new_settings
+
+        # Update settings dialog if open
+        if self.settings_dialog:
+            self.settings_dialog.current_settings = AppSettings.from_dict(new_settings.to_dict())
+            self.settings_dialog._load_current_settings()
+
+        # Story 15.3 (AC #8): re-seed the Clear Comms snapshot from the new
+        # settings so the toolbar button's enablement and tooltip reflect
+        # the just-saved config in the same Qt event tick. Without this,
+        # persisted edits would only apply on next app restart
+        # (set_app_settings handles startup; this handles mid-session edits).
+        # Mirrors the seed block in set_app_settings; the OSError guard is
+        # the same defensive shape for malformed Windows paths.
+        cc_path = new_settings.clear_comms_file_path
+        if cc_path:
+            try:
+                cc_path_valid = Path(cc_path).is_file()
+            except OSError:
+                self.logger.warning(
+                    "Clear Comms file path is invalid after settings change; "
+                    "treating as missing: %s",
+                    cc_path,
+                )
+                cc_path_valid = False
+        else:
+            cc_path_valid = False
+        self.set_clear_comms_config_snapshot(
+            source_kind=new_settings.clear_comms_source_kind,
+            file_path=cc_path,
+            file_path_valid=cc_path_valid,
+            queue_mode=new_settings.clear_comms_queue_mode,
+        )
+
+        self.logger.debug("Updated application settings")
+
+    def _on_voice_directory_changed(self, directory_path: str):
+        """
+        Handle voice directory change from settings dialog.
+
+        Args:
+            directory_path: New voice files directory path
+        """
+        try:
+            self.logger.info(f"Voice directory changed to: {directory_path}")
+
+            # Emit signal for app controller to handle
+            self.voice_directory_changed.emit(directory_path)
+
+            # Show feedback in status bar
+            self.status_bar.showMessage(f"Voice directory updated: {directory_path}", 3000)
+
+        except Exception as e:
+            self.logger.error(f"Error handling voice directory change: {e}")
+
+    def _on_voice_refresh_requested(self):
+        """Handle voice refresh request from settings dialog."""
+        try:
+            self.logger.info("Voice refresh requested from settings")
+
+            # Emit signal for app controller to handle
+            self.voice_refresh_requested.emit()
+
+            # Show feedback in status bar
+            self.status_bar.showMessage("Refreshing voice profiles...", 2000)
+
+        except Exception as e:
+            self.logger.error(f"Error handling voice refresh request: {e}")
+
+    def _on_voice_transcription_requested(self, voice_name: str):
+        """
+        Handle transcription request from settings dialog.
+
+        Args:
+            voice_name: Name of the voice profile to transcribe
+        """
+        try:
+            self.logger.info(f"Transcription requested for voice: {voice_name}")
+
+            # Emit signal for app controller to handle
+            self.voice_transcription_requested.emit(voice_name)
+
+            # Show feedback in status bar
+            self.status_bar.showMessage(f"Queueing transcription for {voice_name}...", 2000)
+
+        except Exception as e:
+            self.logger.error(f"Error handling transcription request: {e}")
+
+    def _on_quick_speak_clicked(self):
+        """
+        Handle Quick Speak button click.
+
+        Story 5.2: Shows popup menu for quick phrase selection.
+        - 3 interactions max: open menu, select phrase, auto-generate
+        - Keyboard navigation with arrow keys + Enter
+        - Escape closes menu
+        """
+        try:
+            if not self.quick_speak_service:
+                self.status_bar.showMessage("Quick Speak not available", 3000)
+                return
+
+            # Create menu if not exists
+            if not self.quick_speak_menu:
+                self.quick_speak_menu = QuickSpeakMenu(self.quick_speak_service, self)
+                self.quick_speak_menu.phrase_selected.connect(self._on_quick_speak_entry_selected)
+                self.quick_speak_menu.open_settings_requested.connect(self._on_quick_speak_settings_requested)
+
+            # Show menu at button position
+            self.quick_speak_menu.show_at_button(self.quick_speak_button)
+
+        except Exception as e:
+            self.logger.error(f"Error opening Quick Speak menu: {e}")
+            self.status_bar.showMessage("Error opening Quick Speak", 3000)
+
+    def _on_quick_speak_settings_requested(self):
+        """
+        Handle request to open settings from Quick Speak menu.
+
+        Story 5.2: Navigate to Quick Speak settings when user clicks configure.
+        """
+        try:
+            self.logger.info("Quick Speak settings requested from menu")
+            self._on_settings_clicked()
+
+            # Navigate to Quick Speak tab if settings dialog is open
+            if self.settings_dialog:
+                self.settings_dialog.navigate_to_quick_speak()
+
+        except Exception as e:
+            self.logger.error(f"Error opening Quick Speak settings: {e}")
+
+    def _on_quick_speak_entry_selected(self, text: str):
+        """
+        Handle Quick Speak entry selection with append mode.
+
+        If the current text ends with an apostrophe "'", the apostrophe is kept and
+        the selected text is appended. Otherwise, the text is replaced.
+
+        Args:
+            text: Selected text to speak
+        """
+        try:
+            self.logger.info(f"Quick Speak entry selected: {text[:50]}...")
+
+            # Get current text in input field
+            current_text = self.text_input.toPlainText()
+
+            # Check if current text ends with apostrophe for append mode
+            if current_text.endswith("'"):
+                # Append mode: Keep apostrophe and append selected text with space
+                final_text = f"{current_text} {text}"
+                self.logger.info(f"Quick Speak append mode: '{current_text}' + '{text}' = '{final_text}'")
+                self.status_bar.showMessage("Quick Speak appended and generating...", 3000)
+            else:
+                # Replace mode: Normal behavior
+                final_text = text
+                self.logger.info(f"Quick Speak replace mode: '{text}'")
+                self.status_bar.showMessage("Quick Speak entry loaded and generating...", 3000)
+
+            # Set final text in input field
+            self.text_input.setPlainText(final_text)
+
+            # Trigger TTS generation
+            self._start_tts_generation(final_text)
+
+        except Exception as e:
+            self.logger.error(f"Error handling Quick Speak selection: {e}")
+            self.status_bar.showMessage("Error processing Quick Speak entry", 3000)
+
+    def _on_quick_speak_entries_changed(self):
+        """
+        Handle Quick Speak entries or profile change.
+
+        Invalidate cached menu and dialog so they refresh with new profile data.
+        """
+        try:
+            # Invalidate cached menu to force refresh on next open
+            if self.quick_speak_menu:
+                self.quick_speak_menu.deleteLater()
+                self.quick_speak_menu = None
+                self.logger.debug("Quick Speak menu invalidated due to entries/profile change")
+
+            # Also invalidate dialog if it exists
+            if self.quick_speak_dialog:
+                self.quick_speak_dialog.deleteLater()
+                self.quick_speak_dialog = None
+                self.logger.debug("Quick Speak dialog invalidated due to entries/profile change")
+        except Exception as e:
+            self.logger.error(f"Error handling Quick Speak entries change: {e}")
+
+    # =========================================================================
+    # Microphone Control Methods
+    # =========================================================================
+
+    def _on_mic_mute_toggled(self, is_muted: bool):
+        """
+        Handle mic mute toggle from mic control widget.
+
+        Args:
+            is_muted: True if mic is now muted
+        """
+        self.mic_mute_toggled.emit(is_muted)
+        status_text = "Microphone muted" if is_muted else "Microphone active"
+        self.status_bar.showMessage(status_text, 2000)
+        self.logger.debug(f"Mic mute toggled: {is_muted}")
+
+    def _on_mic_volume_changed(self, volume: float):
+        """
+        Handle mic volume change from mic control widget.
+
+        Args:
+            volume: New volume level (0.0 to 1.0)
+        """
+        self.mic_volume_changed.emit(volume)
+        self.logger.debug(f"Mic volume changed: {volume:.2f}")
+
+    def show_mic_controls(self, visible: bool, device_name: str = ""):
+        """
+        Show or hide microphone controls.
+
+        Called when mic mixing is enabled/disabled in settings.
+
+        Args:
+            visible: True to show mic controls
+            device_name: Name of selected mic device
+        """
+        if hasattr(self, 'mic_control_widget'):
+            self.mic_control_widget.setVisible(visible)
+            if device_name:
+                self.mic_control_widget.set_device_name(device_name)
+            self.logger.debug(f"Mic controls {'shown' if visible else 'hidden'}")
+
+    def set_mic_muted(self, muted: bool):
+        """
+        Set mic mute state from external source.
+
+        Args:
+            muted: True to show muted state
+        """
+        if hasattr(self, 'mic_control_widget'):
+            self.mic_control_widget.set_muted(muted)
+
+    def set_mic_volume(self, volume: float):
+        """
+        Set mic volume from external source.
+
+        Args:
+            volume: Volume level (0.0 to 1.0)
+        """
+        if hasattr(self, 'mic_control_widget'):
+            self.mic_control_widget.set_volume(volume)
+
+    def toggle_mic_mute(self):
+        """Toggle mic mute state (keyboard shortcut handler)."""
+        if hasattr(self, 'mic_control_widget') and self.mic_control_widget.isVisible():
+            current_muted = self.mic_control_widget.is_muted()
+            self.mic_control_widget.set_muted(not current_muted)
+            self._on_mic_mute_toggled(not current_muted)

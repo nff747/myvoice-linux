@@ -1,0 +1,2265 @@
+"""
+Voice Design Studio Dialog
+
+Main dialog for creating voices using acoustic embeddings. Provides creation workflow:
+- From Description: Generate voices from text descriptions with 5 variations
+  - Imagine sub-tab: Voice templates and description
+  - Create sub-tab: 5 variant generation and selection
+  - Clone sub-tab: Voice cloning from audio samples (QA8)
+- Emotions: Generate emotion variants (Neutral, Happy, Sad, Angry, Flirtatious)
+- Refinement: Extract embeddings and save voice to library
+
+Story 1.2: Voice Design Studio Dialog Shell
+- FR1: User can access Voice Design Studio from the main application
+- FR2: User can switch between "From Description" and "From Sample" tabs
+- FR3: System displays the currently active tab with visual indication
+- FR4: User can close the dialog and return to main application
+
+Story 1.3: Voice Description Input
+- FR6: User can enter a multi-line voice description
+- FR11: User can enter preview text for voice generation
+
+Acceptance Criteria (1.2):
+- Menu action opens modal dialog titled "Voice Design Studio"
+- Dialog displays two tabs: "From Description" and "From Sample"
+- "From Description" tab is active by default with visual indicator
+- Clicking tabs switches content panels
+- Close button (X) closes dialog and returns to main app
+
+Acceptance Criteria (1.3):
+- "From Description" tab shows multi-line "Voice Description" text area (4-5 visible lines)
+- Single-line "Preview Text" field visible
+- "Generate" button initially disabled
+- Generate button enables when both fields have content
+- Button remains disabled if description is empty
+"""
+
+import logging
+import json
+import shutil
+import asyncio
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, TYPE_CHECKING
+
+import numpy as np
+import scipy.io.wavfile as wavfile
+
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
+    QPushButton, QLabel, QMessageBox
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont, QKeySequence, QShortcut
+
+from myvoice.ui.dialogs.voice_design_studio.description_path_panel import DescriptionPathPanel
+from myvoice.ui.dialogs.voice_design_studio.emotions_panel import EmotionsPanel
+from myvoice.ui.dialogs.voice_design_studio.refinement_panel import RefinementPanel
+from myvoice.utils.session_manager import SessionManager
+from myvoice.models.voice_profile import VALID_EMOTIONS
+
+if TYPE_CHECKING:
+    from myvoice.services.qwen_tts_service import QwenTTSService
+
+# Import for torch.load deserialization of VoiceClonePromptItem
+from myvoice.services.qwen_tts_service import VoiceClonePromptItem  # noqa: F401
+
+
+class VoiceDesignStudioDialog(QDialog):
+    """
+    Voice Design Studio dialog for creating voices with acoustic embeddings.
+
+    Provides a tabbed workflow interface:
+    - From Description: Text-based voice design with 5 variations (includes Clone sub-tab for audio cloning)
+    - Emotions: Generate emotion variants for the voice (Neutral, Happy, Sad, Angry, Flirtatious)
+    - Refinement: Extract embeddings and save voice to library
+
+    QA8: From Sample tab removed - clone functionality moved to From Description-Clone sub-tab.
+
+    Signals:
+        voice_saved: Emitted when a voice is successfully saved (voice_name)
+        dialog_closing: Emitted when dialog is closing (has_unsaved_work)
+    """
+
+    voice_saved = pyqtSignal(str)  # voice_name
+    dialog_closing = pyqtSignal(bool)  # has_unsaved_work
+
+    def __init__(
+        self,
+        tts_service: Optional['QwenTTSService'] = None,
+        whisper_service: Optional[object] = None,
+        parent: Optional[QWidget] = None
+    ):
+        """
+        Initialize the Voice Design Studio dialog.
+
+        Args:
+            tts_service: QwenTTSService instance for voice generation
+            whisper_service: WhisperService instance for transcription
+            parent: Parent widget (typically MainWindow)
+        """
+        super().__init__(parent)
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        # TTS service for voice generation
+        self._tts_service = tts_service
+
+        # Whisper service for transcription (QA3 fix)
+        self._whisper_service = whisper_service
+
+        # Session state tracking
+        self._has_unsaved_work = False
+
+        # Generation state
+        self._is_generating = False
+        self._current_variant = 0
+        self._generation_cancelled = False
+
+        # Create session manager for temp file lifecycle (Story 4.1)
+        self._session_manager = SessionManager()
+        self.logger.info(f"Session started: {self._session_manager.session_id}")
+
+        # Setup dialog
+        self._setup_dialog()
+        self._create_ui()
+        self._setup_accessibility()
+        self._setup_shortcuts()
+
+        # QA4: Restore existing variants from persistent session
+        self._restore_existing_variants()
+
+        # QA7: Restore session data (description, preview text) for recovery
+        self._restore_session_data()
+
+        # QA4-1: Restore emotion variants from persistent session
+        self._restore_emotion_variants()
+
+        self.logger.debug("VoiceDesignStudioDialog initialized")
+
+    def _restore_existing_variants(self):
+        """
+        Restore existing variants from persistent session (QA4).
+
+        Checks if there are variant files from a previous session and
+        populates the description panel with them, allowing users to
+        return and select different previously-generated variants.
+        """
+        if not self._session_manager.has_existing_variants():
+            self.logger.debug("No existing variants to restore")
+            return
+
+        existing_variants = self._session_manager.get_existing_variants()
+        self.logger.info(f"Found {len(existing_variants)} existing variants, restoring...")
+
+        # Restore each variant to the description panel
+        for wav_path in existing_variants:
+            try:
+                # Extract variant index from filename (variant_0.wav -> 0)
+                filename = wav_path.stem  # "variant_0"
+                parts = filename.split("_")
+                if len(parts) >= 2:
+                    variant_index = int(parts[1])
+
+                    # Get duration
+                    duration = self._get_audio_duration(wav_path)
+
+                    # Use audio path as placeholder for embedding path
+                    # (embedding extraction happens in From Sample-Clone tab)
+                    self.description_panel.set_variant_complete(
+                        variant_index,
+                        wav_path,
+                        wav_path,  # Audio as placeholder for embedding
+                        duration
+                    )
+                    self.logger.debug(f"Restored variant {variant_index}: {wav_path.name}")
+
+            except Exception as e:
+                self.logger.warning(f"Failed to restore variant {wav_path}: {e}")
+
+        # Switch to Create sub-tab to show restored variants
+        if existing_variants:
+            # QA6: Make result_group visible when restoring (normally set by set_generating())
+            self.description_panel.result_group.setVisible(True)
+            self.description_panel.sub_tabs.setCurrentIndex(1)  # Create tab
+            self.logger.info(f"Restored {len(existing_variants)} variants from previous session")
+
+    def _restore_session_data(self):
+        """
+        QA7: Restore session data (description, preview text) for recovery.
+
+        If the user closed the dialog to test a voice, their description and
+        preview text are restored so they can continue where they left off.
+        """
+        if not self._session_manager.has_session_data():
+            self.logger.debug("No session data to restore")
+            return
+
+        session_data = self._session_manager.load_session_data()
+        if not session_data:
+            return
+
+        # Restore description panel fields
+        voice_description = session_data.get("voice_description", "")
+        preview_text = session_data.get("preview_text", "")
+        voice_name = session_data.get("voice_name", "")
+        language = session_data.get("language", "Auto")
+
+        if voice_description:
+            self.description_panel.set_description(voice_description)
+            self.logger.debug(f"Restored voice description: {len(voice_description)} chars")
+
+        if preview_text:
+            self.description_panel.set_preview_text(preview_text)
+            self.logger.debug(f"Restored preview text: {len(preview_text)} chars")
+
+        if voice_name:
+            self.description_panel.set_voice_name(voice_name)
+            # Also set in refinement panel
+            self.refinement_panel.set_voice_name(voice_name)
+            self.logger.debug(f"Restored voice name: {voice_name}")
+
+        if language and language != "Auto":
+            self.description_panel.set_language(language)
+            self.logger.debug(f"Restored language: {language}")
+
+        # QA Round 2 Item #6: Restore tab state
+        current_tab = session_data.get("current_tab_index", 0)
+        if current_tab > 0:
+            self.tab_widget.setCurrentIndex(current_tab)
+            self.logger.debug(f"Restored tab index: {current_tab}")
+
+        # QA Round 2 Item #6: Check for existing emotion embeddings
+        existing_embeddings = self._session_manager.get_existing_emotion_embeddings()
+        if existing_embeddings:
+            self.logger.info(f"Found {len(existing_embeddings)} existing emotion embeddings")
+            # Mark refinement panel with existing embeddings
+            for emotion, embedding_path in existing_embeddings.items():
+                self.refinement_panel.set_emotion_complete(emotion, embedding_path)
+            # Mark extraction complete if neutral exists and on Refinement tab
+            if current_tab == 2 and "neutral" in existing_embeddings:
+                self.refinement_panel.finish_extraction()
+
+        self.logger.info("Restored session data for recovery")
+
+    def _restore_emotion_variants(self):
+        """
+        QA4-1: Restore emotion variants from persistent session.
+
+        Checks for existing emotion variant files and restores them to the
+        Emotions panel, allowing users to resume work on emotion generation.
+        """
+        emotions = ["neutral", "happy", "sad", "angry", "flirtatious"]
+        restored_count = 0
+
+        for emotion in emotions:
+            try:
+                existing_variants = self._session_manager.get_existing_emotion_variants(emotion)
+                if not existing_variants:
+                    continue
+
+                self.logger.debug(f"Restoring {len(existing_variants)} variants for {emotion}")
+
+                for wav_path in existing_variants:
+                    try:
+                        # Extract variant index from filename (variant_0.wav -> 0)
+                        filename = wav_path.stem  # "variant_0"
+                        parts = filename.split("_")
+                        if len(parts) >= 2:
+                            variant_index = int(parts[1])
+                            duration = self._get_audio_duration(wav_path)
+
+                            # Check for corresponding embedding
+                            embedding_path = wav_path.with_suffix('.pt')
+                            if not embedding_path.exists():
+                                embedding_path = wav_path  # Use audio as placeholder
+
+                            self.emotions_panel.set_variant_complete(
+                                emotion,
+                                variant_index,
+                                wav_path,
+                                embedding_path,
+                                duration
+                            )
+                            restored_count += 1
+
+                    except Exception as e:
+                        self.logger.warning(f"Failed to restore {emotion} variant {wav_path}: {e}")
+
+                # Mark generation as finished for this emotion
+                self.emotions_panel.finish_generation(emotion)
+
+            except Exception as e:
+                self.logger.warning(f"Failed to restore {emotion} variants: {e}")
+
+        if restored_count > 0:
+            self.logger.info(f"QA4-1: Restored {restored_count} emotion variants from session")
+
+    def _get_audio_duration(self, file_path: Path) -> float:
+        """
+        Get audio duration for a file (QA4 helper).
+
+        Args:
+            file_path: Path to the audio file
+
+        Returns:
+            Duration in seconds, or 3.0 as fallback
+        """
+        try:
+            import wave
+            with wave.open(str(file_path), 'rb') as w:
+                frames = w.getnframes()
+                rate = w.getframerate()
+                if rate > 0:
+                    return frames / float(rate)
+        except Exception:
+            pass
+        return 3.0  # Fallback
+
+    def _setup_dialog(self):
+        """Configure dialog properties."""
+        self.setWindowTitle("Voice Design Studio")
+        self.setModal(True)
+        self.resize(600, 500)  # Comfortable size for the workflow
+
+        # Set window flags for proper dialog behavior
+        self.setWindowFlags(
+            Qt.WindowType.Dialog |
+            Qt.WindowType.WindowTitleHint |
+            Qt.WindowType.WindowCloseButtonHint
+        )
+
+    def _create_ui(self):
+        """Create the dialog UI with tabbed interface."""
+        layout = QVBoxLayout(self)
+        # QA3-2: Reduced margins and spacing for smaller screens
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(6)
+
+        # Header
+        self._create_header(layout)
+
+        # Tab widget for voice creation workflow
+        # Emotion Variants: Added Emotions and Refinement tabs between Description and Sample
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setObjectName("voice_design_studio_tabs")
+
+        # Create and add tabs in workflow order
+        # Tab 0: From Description - initial voice generation (includes Clone sub-tab)
+        # Tab 1: Emotions - generate emotion variants (Emotion Variants feature)
+        # Tab 2: Refinement - extract embeddings and save (Emotion Variants feature)
+        # QA8: From Sample tab removed - clone functionality moved to From Description-Clone sub-tab
+        self._create_description_tab()
+        self._create_emotions_tab()
+        self._create_refinement_tab()
+
+        # Set "From Description" as default active tab
+        self.tab_widget.setCurrentIndex(0)
+
+        # Connect tab change signal
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+        layout.addWidget(self.tab_widget, 1)  # Stretch to fill space
+
+        # Footer buttons
+        self._create_footer(layout)
+
+    def _create_header(self, layout: QVBoxLayout):
+        """Create the dialog header with title and description."""
+        # Title
+        title_label = QLabel("Voice Design Studio")
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(12)
+        title_label.setFont(title_font)
+        title_label.setObjectName("dialog_title")
+        layout.addWidget(title_label)
+
+        # Description
+        desc_label = QLabel(
+            "Create custom voices with full emotion control. "
+            "Choose to describe a voice or extract from an audio sample."
+        )
+        desc_label.setWordWrap(True)
+        desc_label.setObjectName("dialog_description")
+        layout.addWidget(desc_label)
+
+    def _create_description_tab(self):
+        """Create the 'From Description' tab with DescriptionPathPanel."""
+        # Create the description path panel (Story 1.3)
+        self.description_panel = DescriptionPathPanel()
+
+        # Connect panel signals
+        self.description_panel.generate_requested.connect(self._on_generate_requested)
+        self.description_panel.content_changed.connect(self._on_description_content_changed)
+        self.description_panel.save_ready_changed.connect(self._on_save_ready_changed)
+        self.description_panel.regenerate_requested.connect(self._on_regenerate_requested)
+        # QA3: Connect refine signal for cross-tab data transfer
+        self.description_panel.refine_requested.connect(self._on_refine_requested)
+
+        # QA8: Connect clone tab signals
+        self.description_panel.clone_transcribe_requested.connect(self._on_clone_transcribe_requested)
+        self.description_panel.clone_proceed_requested.connect(self._on_clone_proceed_requested)
+
+        self.tab_widget.addTab(self.description_panel, "From Description")
+
+    def _create_emotions_tab(self):
+        """
+        Create the 'Emotions' tab with EmotionsPanel.
+
+        Emotion Variants Feature: This tab allows users to generate
+        voice variants for each of the 5 emotions (Neutral, Happy, Sad, Angry, Flirtatious).
+        """
+        self.emotions_panel = EmotionsPanel()
+
+        # Connect panel signals
+        self.emotions_panel.generation_requested.connect(self._on_emotion_generation_requested)
+        self.emotions_panel.emotion_variant_selected.connect(self._on_emotion_variant_selected)
+        self.emotions_panel.proceed_to_refinement_requested.connect(self._on_proceed_to_refinement)
+        self.emotions_panel.neutral_selection_changed.connect(self._on_neutral_selection_changed)
+        # QA6: Connect transcription request for per-emotion transcripts
+        self.emotions_panel.transcription_requested.connect(self._on_emotion_transcribe_requested)
+        # QA Round 4 Bug 2: Sync voice description back to From Description-Imagine tab
+        self.emotions_panel.voice_description_changed.connect(self._on_emotions_voice_description_changed)
+
+        self.tab_widget.addTab(self.emotions_panel, "Emotions")
+
+    def _create_refinement_tab(self):
+        """
+        Create the 'Refinement' tab with RefinementPanel.
+
+        Emotion Variants Feature: This tab allows users to extract embeddings
+        from selected emotion samples and save the voice to the library.
+        """
+        self.refinement_panel = RefinementPanel()
+
+        # Connect panel signals
+        self.refinement_panel.extraction_requested.connect(self._on_batch_extraction_requested)
+        self.refinement_panel.save_requested.connect(self._on_refinement_save_requested)
+        self.refinement_panel.preview_requested.connect(self._on_preview_requested)
+        self.refinement_panel.back_requested.connect(self._on_back_to_emotions)
+
+        self.tab_widget.addTab(self.refinement_panel, "Refinement")
+
+    def _on_save_ready_changed(self, is_ready: bool):
+        """
+        Handle save readiness changes from description panel.
+
+        QA5: Save button removed from Description tab - this is now a no-op.
+        Saving happens in From Sample-Clone tab via Extract Embedding.
+
+        Args:
+            is_ready: True if voice is ready to save (unused)
+        """
+        pass  # No save button in Description tab
+
+    def _on_generate_requested(self, description: str, preview_text: str, language: str):
+        """
+        Handle generate request from description panel.
+
+        Generates 5 voice variations using the TTS service with progressive reveal.
+
+        Args:
+            description: Voice description text
+            preview_text: Preview text for generation
+            language: Language for generation (e.g., "English", "Auto")
+        """
+        self.logger.info(f"Generate requested: {len(description)} char description, language={language}")
+
+        # Check if TTS service is available
+        if not self._tts_service:
+            self.logger.error("TTS service not available")
+            QMessageBox.warning(
+                self,
+                "Service Unavailable",
+                "Voice generation service is not available. Please try again later."
+            )
+            return
+
+        if not self._tts_service.is_running():
+            self.logger.error("TTS service not running")
+            QMessageBox.warning(
+                self,
+                "Service Not Ready",
+                "Voice generation service is still initializing. Please wait a moment and try again."
+            )
+            return
+
+        # Start generation
+        self._is_generating = True
+        self._generation_cancelled = False
+        self._current_variant = 0
+
+        # Set UI to generating state
+        self.description_panel.set_generating(True, "Starting generation...")
+
+        # Store generation parameters for potential regeneration
+        self._last_description = description
+        self._last_preview_text = preview_text
+        self._last_language = language
+
+        # Start generating variants
+        self._generate_next_variant(description, preview_text, language)
+
+    def _generate_next_variant(self, description: str, preview_text: str, language: str):
+        """
+        Generate the next voice variant.
+
+        Args:
+            description: Voice description text
+            preview_text: Preview text for generation
+            language: Language for generation
+        """
+        if self._generation_cancelled or self._current_variant >= 5:
+            self._finish_generation()
+            return
+
+        variant_index = self._current_variant
+        self.logger.debug(f"Generating variant {variant_index + 1}/5")
+
+        # Update UI to show this variant is generating
+        self.description_panel.set_variant_generating(variant_index)
+
+        # Run async generation
+        self._run_async_task(
+            self._generate_single_variant(description, preview_text, language, variant_index),
+            on_success=lambda result: self._on_variant_generated(result, description, preview_text, language),
+            on_error=lambda e: self._on_variant_failed(e, variant_index, description, preview_text, language)
+        )
+
+    async def _generate_single_variant(
+        self,
+        description: str,
+        preview_text: str,
+        language: str,
+        variant_index: int
+    ) -> dict:
+        """
+        Generate a single voice variant.
+
+        Args:
+            description: Voice description text
+            preview_text: Preview text for generation
+            language: Language for generation
+            variant_index: Index of the variant (0-4)
+
+        Returns:
+            Dictionary with audio_data, sample_rate, variant_index
+        """
+        self.logger.debug(f"Generating variant {variant_index + 1} with VoiceDesign model")
+
+        # Generate voice using VoiceDesign model
+        response = await self._tts_service.generate_voice_design(
+            text=preview_text,
+            voice_description=description,
+            language=language,
+            streaming=False,  # Use non-streaming for simpler handling
+        )
+
+        if not response.success:
+            raise RuntimeError(response.error_message or "Voice generation failed")
+
+        return {
+            'audio_data': response.audio_data,
+            'sample_rate': response.sample_rate,
+            'variant_index': variant_index,
+        }
+
+    def _on_variant_generated(self, result: dict, description: str, preview_text: str, language: str):
+        """
+        Handle successful variant generation.
+
+        Args:
+            result: Generation result with audio_data, sample_rate, variant_index
+            description: Voice description text
+            preview_text: Preview text for generation
+            language: Language for generation
+        """
+        if self._generation_cancelled:
+            return
+
+        variant_index = result['variant_index']
+        audio_data = result['audio_data']
+        sample_rate = result['sample_rate']
+
+        self.logger.debug(f"Variant {variant_index + 1} generated successfully")
+
+        # Save audio to session directory
+        audio_path = self._session_manager.get_variant_path(variant_index, "wav")
+        try:
+            # Ensure audio data is in correct format for wavfile
+            if audio_data.dtype != np.int16:
+                # Normalize and convert to int16
+                audio_data = np.clip(audio_data, -1.0, 1.0)
+                audio_data = (audio_data * 32767).astype(np.int16)
+
+            wavfile.write(str(audio_path), sample_rate, audio_data)
+            self.logger.debug(f"Saved variant {variant_index + 1} to {audio_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to save variant {variant_index + 1}: {e}")
+            self._on_variant_failed(e, variant_index, description, preview_text, language)
+            return
+
+        # Calculate duration
+        duration = len(audio_data) / sample_rate
+
+        # Use audio path as placeholder for embedding path
+        # (embedding extraction happens in From Sample-Clone tab, not here)
+        embedding_path = audio_path
+
+        # Update UI
+        self.description_panel.set_variant_complete(
+            variant_index,
+            audio_path,
+            embedding_path,
+            duration
+        )
+
+        # Move to next variant
+        self._current_variant = variant_index + 1
+        self._generate_next_variant(description, preview_text, language)
+
+    def _on_variant_failed(self, error: Exception, variant_index: int, description: str, preview_text: str, language: str):
+        """
+        Handle variant generation failure.
+
+        Args:
+            error: The exception that occurred
+            variant_index: Index of the failed variant
+            description: Voice description text
+            preview_text: Preview text for generation
+            language: Language for generation
+        """
+        self.logger.error(f"Variant {variant_index + 1} failed: {error}")
+
+        # Update UI to show error for this variant
+        self.description_panel.set_variant_error(variant_index, str(error))
+
+        # Continue with next variant (don't stop on single failure)
+        self._current_variant = variant_index + 1
+        self._generate_next_variant(description, preview_text, language)
+
+    def _finish_generation(self):
+        """Finish the generation process."""
+        self._is_generating = False
+        self.description_panel.finish_generation()
+        self.logger.info(f"Generation complete: {self._current_variant} variants processed")
+
+    def _run_async_task(self, coro, on_success=None, on_error=None):
+        """
+        Helper to run async tasks from sync Qt signal handlers.
+
+        Uses the shared qasync event loop.
+
+        Args:
+            coro: Coroutine to execute
+            on_success: Optional callback for successful completion
+            on_error: Optional callback for errors
+        """
+        async def _handle_task():
+            try:
+                result = await coro
+                if on_success:
+                    on_success(result)
+            except Exception as e:
+                self.logger.exception(f"Error in async task: {e}")
+                if on_error:
+                    on_error(e)
+
+        # Create task in shared qasync loop
+        asyncio.ensure_future(_handle_task())
+
+    def _on_regenerate_requested(self):
+        """
+        Handle regenerate request from description panel (Story 1.9).
+
+        Story 4.1 REVISED: Clears previous temp audition files BEFORE
+        generating new variants. This is the ONLY place temp files are deleted.
+        """
+        self.logger.debug("Regenerate All requested")
+
+        # Story 1.9/4.1: Clear previous variant files before regenerating
+        # This is the ONLY action that deletes temp audition files
+        if self._session_manager and not self._session_manager.is_cleaned:
+            deleted = self._session_manager.clear_variant_files()
+            self.logger.info(f"Cleared {deleted} previous variant files before regeneration")
+
+        # Get current description, preview text, and language
+        description = self.description_panel.get_description()
+        preview_text = self.description_panel.get_preview_text()
+        language = self.description_panel.get_language()
+
+        # Trigger new generation with same parameters
+        # This will clear existing variants via set_generating() in the panel
+        self._on_generate_requested(description, preview_text, language)
+
+    def _on_description_content_changed(self):
+        """Handle content changes in description panel."""
+        # Update unsaved work flag if there's content
+        has_content = self.description_panel.has_content()
+        self.set_has_unsaved_work(has_content)
+
+    # =========================================================================
+    # Emotion Variants: Emotions Tab Signal Handlers
+    # =========================================================================
+
+    def _on_emotion_generation_requested(self, emotion: str, instruction: str, preview_text: str):
+        """
+        Handle generation request from emotions panel.
+
+        Generates 5 voice variants for the specified emotion using the instruct parameter.
+
+        Args:
+            emotion: Emotion ID (e.g., "neutral", "happy")
+            instruction: Emotion instruction text
+            preview_text: Preview text for generation
+        """
+        self.logger.info(f"Emotion generation requested: {emotion}")
+
+        # Check if TTS service is available
+        if not self._tts_service or not self._tts_service.is_running():
+            self.logger.error("TTS service not available")
+            self.emotions_panel.set_generation_error(
+                emotion, "Voice generation service is not available."
+            )
+            return
+
+        # Get voice description from Description panel or Emotions panel
+        # QA Round 3: Check emotions panel first since user may have edited it there
+        description = self.emotions_panel.get_emotion_tab(emotion).get_voice_description()
+        if not description:
+            description = self.description_panel.get_description()
+
+        if not description:
+            # Check if Clone workflow is active (has clone_transcript in session)
+            # QA Round 3: Removed neutral_embedding.exists() check - embedding is created
+            # in Refinement step AFTER emotion generation, not before
+            session_data = self._session_manager.load_session_data()
+            clone_transcript = session_data.get("clone_transcript") if session_data else None
+
+            if clone_transcript:
+                # Clone workflow: use generic description, NOT the transcript
+                # QA Round 3: Transcript is what was SPOKEN, not voice characteristics
+                # User can enter their own voice description in the Emotions tab if needed
+                description = "Natural speaking voice cloned from audio sample"
+                self.logger.info(f"Using generic description for Clone workflow emotion generation")
+            else:
+                self.emotions_panel.set_generation_error(
+                    emotion, "Please enter a voice description or generate a voice in the Description tab first."
+                )
+                return
+
+        # Get preview text (use from emotions panel or fallback to description panel)
+        if not preview_text:
+            preview_text = self.description_panel.get_preview_text()
+
+        # Set UI to generating state
+        self.emotions_panel.set_generating(emotion, True, "Starting generation...")
+
+        # Generate 5 variants for this emotion
+        self._emotion_generation_state = {
+            'emotion': emotion,
+            'instruction': instruction,
+            'description': description,
+            'preview_text': preview_text,
+            'current_variant': 0,
+            'cancelled': False
+        }
+
+        # QA Round 3: Store preview_text per emotion for correct extraction ref_text
+        # This prevents mismatch when generated emotion audio speaks preview_text
+        # but extraction incorrectly uses clone_transcript as ref_text
+        self._session_manager.save_session_data(
+            emotion_preview_texts={emotion: preview_text}
+        )
+        self.logger.debug(f"Stored preview_text for {emotion}: {preview_text[:50]}...")
+
+        self._generate_next_emotion_variant()
+
+    def _generate_next_emotion_variant(self):
+        """Generate the next emotion variant."""
+        state = getattr(self, '_emotion_generation_state', None)
+        if not state or state['cancelled'] or state['current_variant'] >= 5:
+            self._finish_emotion_generation()
+            return
+
+        emotion = state['emotion']
+        variant_index = state['current_variant']
+
+        self.logger.debug(f"Generating {emotion} variant {variant_index + 1}/5")
+        self.emotions_panel.set_variant_generating(emotion, variant_index)
+
+        # Run async generation
+        self._run_async_task(
+            self._generate_single_emotion_variant(state, variant_index),
+            on_success=self._on_emotion_variant_generated,
+            on_error=lambda e: self._on_emotion_variant_failed(e, variant_index)
+        )
+
+    async def _generate_single_emotion_variant(self, state: dict, variant_index: int) -> dict:
+        """
+        Generate a single emotion variant using VoiceDesign model with instruct.
+
+        Args:
+            state: Generation state dictionary
+            variant_index: Index of the variant (0-4)
+
+        Returns:
+            Dictionary with audio_data, sample_rate, variant_index, emotion
+        """
+        emotion = state['emotion']
+        instruction = state['instruction']
+        description = state['description']
+        preview_text = state['preview_text']
+
+        self.logger.debug(f"Generating {emotion} variant {variant_index + 1}")
+
+        # Combine voice description with emotion instruction
+        full_description = f"{description}\n\nEmotion instruction: {instruction}"
+
+        # Get language from description panel
+        language = self.description_panel.get_language()
+
+        # Generate voice using VoiceDesign model
+        response = await self._tts_service.generate_voice_design(
+            text=preview_text,
+            voice_description=full_description,
+            language=language,
+            streaming=False,
+        )
+
+        if not response.success:
+            raise RuntimeError(response.error_message or "Voice generation failed")
+
+        return {
+            'audio_data': response.audio_data,
+            'sample_rate': response.sample_rate,
+            'variant_index': variant_index,
+            'emotion': emotion,
+        }
+
+    def _on_emotion_variant_generated(self, result: dict):
+        """Handle successful emotion variant generation."""
+        state = getattr(self, '_emotion_generation_state', None)
+        if not state or state['cancelled']:
+            return
+
+        emotion = result['emotion']
+        variant_index = result['variant_index']
+        audio_data = result['audio_data']
+        sample_rate = result['sample_rate']
+
+        self.logger.debug(f"{emotion} variant {variant_index + 1} generated")
+
+        # Save audio to session directory (emotion-specific path)
+        audio_path = self._session_manager.get_emotion_variant_path(emotion, variant_index, "wav")
+        try:
+            if audio_data.dtype != np.int16:
+                audio_data = np.clip(audio_data, -1.0, 1.0)
+                audio_data = (audio_data * 32767).astype(np.int16)
+
+            wavfile.write(str(audio_path), sample_rate, audio_data)
+            self.logger.debug(f"Saved {emotion} variant {variant_index + 1} to {audio_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to save {emotion} variant {variant_index + 1}: {e}")
+            self._on_emotion_variant_failed(e, variant_index)
+            return
+
+        # Calculate duration
+        duration = len(audio_data) / sample_rate
+
+        # Use audio path as placeholder for embedding (extraction happens in Refinement)
+        embedding_path = audio_path
+
+        # Update UI
+        self.emotions_panel.set_variant_complete(emotion, variant_index, audio_path, embedding_path, duration)
+
+        # Move to next variant
+        state['current_variant'] = variant_index + 1
+        self._generate_next_emotion_variant()
+
+    def _on_emotion_variant_failed(self, error: Exception, variant_index: int):
+        """Handle emotion variant generation failure."""
+        state = getattr(self, '_emotion_generation_state', None)
+        if not state:
+            return
+
+        emotion = state['emotion']
+        self.logger.error(f"{emotion} variant {variant_index + 1} failed: {error}")
+
+        self.emotions_panel.set_variant_error(emotion, variant_index, str(error))
+
+        # Continue with next variant
+        state['current_variant'] = variant_index + 1
+        self._generate_next_emotion_variant()
+
+    def _finish_emotion_generation(self):
+        """Finish emotion variant generation."""
+        state = getattr(self, '_emotion_generation_state', None)
+        if state:
+            emotion = state['emotion']
+            self.emotions_panel.finish_generation(emotion)
+            self.logger.info(f"{emotion} generation complete")
+        self._emotion_generation_state = None
+
+    def _on_emotion_variant_selected(self, emotion: str, variant_index: int):
+        """Handle emotion variant selection."""
+        self.logger.debug(f"Emotion variant selected: {emotion} variant {variant_index}")
+        self.set_has_unsaved_work(True)
+
+    def _on_neutral_selection_changed(self, has_selection: bool):
+        """Handle neutral selection state change."""
+        self.logger.debug(f"Neutral selection changed: {has_selection}")
+        # Neutral selection is required to proceed to Refinement
+
+    def _on_emotions_voice_description_changed(self, new_description: str):
+        """
+        QA Round 4 Bug 2: Handle voice description changes from Emotions panel.
+
+        Syncs the voice description back to the From Description-Imagine tab
+        to prevent data loss when navigating between tabs.
+
+        Args:
+            new_description: The new voice description text
+        """
+        self.logger.debug(f"Emotions voice description changed, syncing to Description panel: {len(new_description)} chars")
+        # Sync to description panel without triggering loops
+        # Use blockSignals to prevent recursive updates
+        self.description_panel.description_edit.blockSignals(True)
+        self.description_panel.description_edit.setPlainText(new_description)
+        self.description_panel.description_edit.blockSignals(False)
+        # Update button states
+        self.description_panel._update_generate_button_state()
+
+    def _on_proceed_to_refinement(self):
+        """
+        Handle proceed to refinement request from emotions panel.
+
+        Transfers all selected emotion samples to the Refinement panel.
+        """
+        self.logger.info("Proceeding to Refinement tab")
+
+        # Get all selected emotion samples
+        selected_emotions = self.emotions_panel.get_selected_emotions()
+        if not selected_emotions:
+            self.logger.warning("No emotions selected")
+            return
+
+        if "neutral" not in selected_emotions:
+            self.logger.warning("Neutral not selected - required for proceeding")
+            return
+
+        # Build samples dict for refinement panel: emotion -> (audio_path, embedding_path)
+        samples = {}
+        for emotion in selected_emotions:
+            paths = self.emotions_panel.get_selected_variant_paths(emotion)
+            if paths:
+                audio_path, embedding_path = paths
+                samples[emotion] = (audio_path, embedding_path)
+
+        # Get voice description for saving
+        description = self.description_panel.get_description()
+
+        # QA Round 2 Item #2: Preserve voice name across tab navigation
+        # Get voice name BEFORE clear() to restore it after
+        existing_voice_name = self.refinement_panel.get_voice_name()
+        if not existing_voice_name:
+            # Fallback to description panel voice name
+            existing_voice_name = self.description_panel.get_voice_name()
+
+        # Set up refinement panel
+        self.refinement_panel.clear()
+        self.refinement_panel.set_samples(samples)
+        self.refinement_panel.set_voice_description(description)
+
+        # Set current tier for dual-tier extraction UI
+        if self._tts_service:
+            current_tier = self._tts_service.get_quality_tier()
+            self.refinement_panel.set_current_tier(current_tier)
+
+        # QA Round 2 Item #2: Restore voice name after clear()
+        if existing_voice_name:
+            self.refinement_panel.set_voice_name(existing_voice_name)
+
+        # Switch to Refinement tab (index 2)
+        self.tab_widget.setCurrentIndex(2)
+
+        self.logger.info(f"Transferred {len(samples)} emotion samples to Refinement")
+
+    # =========================================================================
+    # Emotion Variants: Refinement Tab Signal Handlers
+    # =========================================================================
+
+    def _on_batch_extraction_requested(self):
+        """
+        Handle batch extraction request from refinement panel.
+
+        Extracts embeddings for all selected emotion samples sequentially.
+        Supports dual-tier extraction when the checkbox is enabled.
+        """
+        self.logger.info("Batch extraction requested")
+
+        emotions = self.refinement_panel.get_sample_emotions()
+        if not emotions:
+            self.logger.warning("No samples to extract")
+            return
+
+        # Check TTS service
+        if not self._tts_service or not self._tts_service.is_running():
+            self.refinement_panel.set_extraction_error("Voice service not available")
+            return
+
+        # Determine which tiers to extract
+        current_tier = self._tts_service.get_quality_tier()
+        current_tier_short = "1.7" if current_tier == "quality" else "0.6"
+        other_tier = "small" if current_tier == "quality" else "quality"
+        other_tier_short = "0.6" if current_tier == "quality" else "1.7"
+
+        # Build extraction tasks: list of (emotion, tier, tier_short)
+        extraction_tasks = []
+        for emotion in emotions:
+            # Always extract for current tier first
+            extraction_tasks.append((emotion, current_tier, current_tier_short))
+            # Add other tier if dual extraction is enabled
+            if self.refinement_panel.is_dual_tier_enabled():
+                extraction_tasks.append((emotion, other_tier, other_tier_short))
+
+        # Start extraction
+        tier_msg = "both tiers" if self.refinement_panel.is_dual_tier_enabled() else f"{current_tier_short} tier"
+        self.refinement_panel.set_extracting(True, f"Starting extraction ({tier_msg})...")
+
+        self._batch_extraction_state = {
+            'tasks': extraction_tasks,
+            'current_index': 0,
+            'total': len(extraction_tasks),
+            'emotions': emotions,  # For tracking per-emotion completion
+            'completed_emotions': set(),  # Track which emotions are fully done
+            'cancelled': False,
+            'dual_tier': self.refinement_panel.is_dual_tier_enabled(),
+            'current_tier': current_tier,
+            'current_tier_short': current_tier_short
+        }
+
+        self._extract_next_emotion_embedding()
+
+    def _extract_next_emotion_embedding(self):
+        """Extract embedding for the next task in the batch."""
+        state = getattr(self, '_batch_extraction_state', None)
+        if not state or state['cancelled'] or state['current_index'] >= state['total']:
+            self._finish_batch_extraction()
+            return
+
+        tasks = state['tasks']
+        index = state['current_index']
+        emotion, tier, tier_short = tasks[index]
+
+        # Calculate display progress based on emotions, not individual tier tasks
+        emotions_count = len(state['emotions'])
+        emotion_index = state['emotions'].index(emotion) + 1
+        tier_suffix = f" ({tier_short})" if state['dual_tier'] else ""
+
+        self.logger.debug(f"Extracting embedding for {emotion}{tier_suffix} ({index + 1}/{state['total']})")
+
+        # Update UI - show emotion progress
+        self.refinement_panel.set_extraction_progress(emotion_index, emotions_count, f"{emotion}{tier_suffix}")
+
+        # Only mark as extracting on first tier for this emotion
+        if emotion not in state['completed_emotions']:
+            self.refinement_panel.set_emotion_extracting(emotion)
+
+        # Get audio path for this emotion
+        audio_paths = self.refinement_panel.get_audio_paths()
+        audio_path = audio_paths.get(emotion)
+
+        if not audio_path or not audio_path.exists():
+            self.logger.error(f"Audio file not found for {emotion}")
+            self._on_emotion_extraction_failed(Exception(f"Audio not found"), emotion)
+            return
+
+        # Run async extraction with tier
+        self._run_async_task(
+            self._extract_emotion_embedding(emotion, audio_path, tier, tier_short),
+            on_success=self._on_emotion_extraction_complete,
+            on_error=lambda e: self._on_emotion_extraction_failed(e, emotion)
+        )
+
+    async def _extract_emotion_embedding(
+        self,
+        emotion: str,
+        audio_path: Path,
+        tier: str = None,
+        tier_short: str = None
+    ) -> dict:
+        """
+        Extract embedding for a single emotion and tier.
+
+        Args:
+            emotion: Emotion ID
+            audio_path: Path to the audio sample
+            tier: Quality tier ("quality" or "small") - if None, uses current tier
+            tier_short: Tier display string ("1.7" or "0.6") - if None, derived from tier
+
+        Returns:
+            Dictionary with emotion, tier, and embedding_path
+        """
+        import torch
+
+        tier_suffix = f" ({tier_short})" if tier_short else ""
+        self.logger.debug(f"Extracting embedding from {audio_path}{tier_suffix}")
+
+        # QA Round 3: Get ref_text - priority order:
+        # 1. Per-emotion transcript from Emotions panel (for uploaded samples with different audio per emotion)
+        # 2. emotion_preview_texts[emotion] from session (generated emotions - text that was actually spoken)
+        # 3. clone_transcript from session (Clone workflow - for Neutral uploaded sample)
+        # 4. preview_text from session (From Scratch workflow - fallback)
+        ref_text = ""
+
+        # First, try per-emotion transcript from emotions panel (for uploaded samples)
+        emotion_transcript = self.emotions_panel.get_emotion_transcript(emotion)
+        if emotion_transcript:
+            ref_text = emotion_transcript
+            self.logger.info(f"Using per-emotion transcript for {emotion}{tier_suffix} extraction: {ref_text[:50]}...")
+        else:
+            # Fall back to session data
+            session_data = self._session_manager.load_session_data()
+            if session_data:
+                # QA Round 3: Check emotion_preview_texts first - this is what generated emotions actually speak
+                # This fixes GPU hang caused by mismatch between spoken audio and ref_text
+                emotion_preview_texts = session_data.get("emotion_preview_texts", {})
+                if emotion in emotion_preview_texts:
+                    ref_text = emotion_preview_texts[emotion]
+                    self.logger.info(f"Using stored emotion preview_text for {emotion}{tier_suffix} extraction: {ref_text[:50]}...")
+                elif session_data.get("clone_transcript"):
+                    ref_text = session_data["clone_transcript"]
+                    self.logger.info(f"Using clone transcript for {emotion}{tier_suffix} extraction: {ref_text[:50]}...")
+                elif session_data.get("preview_text"):
+                    ref_text = session_data["preview_text"]
+                    self.logger.info(f"Using preview text for {emotion}{tier_suffix} extraction: {ref_text[:50]}...")
+
+        if not ref_text:
+            raise ValueError(f"No ref_text available for {emotion} extraction. Please ensure transcript or preview text is provided.")
+
+        # Extract embedding using tier-specific method if tier is specified
+        if tier:
+            voice_clone_prompt = await self._tts_service.create_voice_clone_prompt_for_tier(
+                ref_audio=audio_path,
+                ref_text=ref_text,
+                tier=tier
+            )
+        else:
+            voice_clone_prompt = await self._tts_service.create_voice_clone_prompt(
+                ref_audio=audio_path,
+                ref_text=ref_text
+            )
+
+        # Move tensors to CPU before saving for cross-device compatibility
+        if voice_clone_prompt.ref_code is not None:
+            voice_clone_prompt.ref_code = voice_clone_prompt.ref_code.cpu()
+        if voice_clone_prompt.ref_spk_embedding is not None:
+            voice_clone_prompt.ref_spk_embedding = voice_clone_prompt.ref_spk_embedding.cpu()
+
+        # Save embedding to tier-specific path
+        embedding_path = self._session_manager.get_emotion_embedding_path(emotion, tier=tier_short)
+        torch.save(voice_clone_prompt, str(embedding_path))
+
+        # Copy source audio for fallback (once per emotion, not per tier)
+        source_audio_path = self._session_manager.get_emotion_source_audio_path(emotion)
+        if not source_audio_path.exists():
+            shutil.copy2(audio_path, source_audio_path)
+            self.logger.debug(f"Copied source audio to {source_audio_path}")
+
+        # Verify save was successful by reloading
+        try:
+            verify_prompt = torch.load(str(embedding_path), map_location='cpu', weights_only=False)
+            if verify_prompt.ref_spk_embedding is None:
+                raise ValueError("Embedding verification failed: ref_spk_embedding is None")
+            self.logger.info(f"Saved and verified {emotion}{tier_suffix} embedding to {embedding_path}")
+        except Exception as verify_error:
+            self.logger.error(f"Embedding verification failed: {verify_error}")
+            raise RuntimeError(f"Failed to save {emotion}{tier_suffix} embedding correctly: {verify_error}")
+
+        return {
+            'emotion': emotion,
+            'tier': tier,
+            'tier_short': tier_short,
+            'embedding_path': embedding_path
+        }
+
+    def _on_emotion_extraction_complete(self, result: dict):
+        """Handle successful emotion embedding extraction."""
+        state = getattr(self, '_batch_extraction_state', None)
+        if not state or state['cancelled']:
+            return
+
+        emotion = result['emotion']
+        tier_short = result.get('tier_short', '')
+        embedding_path = result['embedding_path']
+
+        tier_suffix = f" ({tier_short})" if tier_short else ""
+        self.logger.debug(f"{emotion}{tier_suffix} embedding extraction complete")
+
+        # Check if this is the last tier for this emotion
+        current_index = state['current_index']
+        tasks = state['tasks']
+
+        # Look ahead to see if next task is same emotion (different tier)
+        is_last_tier_for_emotion = True
+        if current_index + 1 < len(tasks):
+            next_emotion, _, _ = tasks[current_index + 1]
+            if next_emotion == emotion:
+                is_last_tier_for_emotion = False
+
+        # Only mark emotion complete in UI when all tiers are done
+        if is_last_tier_for_emotion:
+            # Use current tier's embedding path for UI display
+            current_tier_short = state.get('current_tier_short', '1.7')
+            current_tier_embedding = self._session_manager.get_emotion_embedding_path(
+                emotion, tier=current_tier_short
+            )
+            self.refinement_panel.set_emotion_complete(emotion, current_tier_embedding)
+            state['completed_emotions'].add(emotion)
+            self.logger.info(f"{emotion} fully extracted for all tiers")
+
+        # Move to next task
+        state['current_index'] += 1
+        self._extract_next_emotion_embedding()
+
+    def _on_emotion_extraction_failed(self, error: Exception, emotion: str):
+        """Handle emotion embedding extraction failure."""
+        self.logger.error(f"{emotion} extraction failed: {error}")
+
+        self.refinement_panel.set_emotion_error(emotion, str(error)[:30])
+
+        # Continue with next emotion
+        state = getattr(self, '_batch_extraction_state', None)
+        if state:
+            state['current_index'] += 1
+            self._extract_next_emotion_embedding()
+
+    def _finish_batch_extraction(self):
+        """Finish batch extraction and generate preview."""
+        self.logger.info("Batch extraction complete")
+
+        self.refinement_panel.finish_extraction()
+        self._batch_extraction_state = None
+
+        # Generate preview using neutral embedding
+        self._generate_refinement_preview()
+
+    def _generate_refinement_preview(self):
+        """Generate a preview audio using the neutral embedding."""
+        embedding_paths = self.refinement_panel.get_embedding_paths()
+        neutral_embedding = embedding_paths.get("neutral")
+
+        if not neutral_embedding or not neutral_embedding.exists():
+            self.logger.warning("No neutral embedding for preview")
+            return
+
+        preview_text = self.description_panel.get_preview_text()
+        language = self.description_panel.get_language()
+
+        # QA Round 2 Item #3: Show loading indicator before async generation
+        self.refinement_panel.set_preview_generating(True)
+
+        self._run_async_task(
+            self._generate_preview_audio(neutral_embedding, preview_text, language),
+            on_success=self._on_refinement_preview_complete,
+            on_error=self._on_refinement_preview_error
+        )
+
+    def _on_refinement_preview_error(self, error):
+        """QA Round 2 Item #3: Handle preview generation error."""
+        self.logger.error(f"Preview generation failed: {error}")
+        self.refinement_panel.set_preview_generating(False)
+        self.refinement_panel.preview_status.setText("Preview generation failed")
+        self.refinement_panel.preview_status.setStyleSheet("color: red;")
+
+    async def _generate_preview_audio(
+        self,
+        embedding_path: Path,
+        preview_text: str,
+        language: str
+    ) -> Path:
+        """Generate preview audio using an embedding."""
+        response = await self._tts_service.generate_with_embedding(
+            text=preview_text,
+            embedding_path=embedding_path,
+            language=language if language != "Auto" else "Auto",
+            streaming=False,
+        )
+
+        if not response.success:
+            raise RuntimeError(response.error_message or "Preview generation failed")
+
+        # Save preview audio
+        audio_data = response.audio_data
+        sample_rate = response.sample_rate
+
+        preview_path = self._session_manager.session_dir / "refinement_preview.wav"
+
+        if audio_data.dtype != np.int16:
+            audio_data = np.clip(audio_data, -1.0, 1.0)
+            audio_data = (audio_data * 32767).astype(np.int16)
+
+        wavfile.write(str(preview_path), sample_rate, audio_data)
+
+        return preview_path
+
+    def _on_refinement_preview_complete(self, preview_path: Path):
+        """Handle successful preview generation."""
+        self.logger.info(f"Refinement preview generated: {preview_path}")
+        self.refinement_panel.set_preview_audio(preview_path)
+
+    def _on_preview_requested(self):
+        """Handle preview request from refinement panel."""
+        self._generate_refinement_preview()
+
+    def _on_back_to_emotions(self):
+        """Handle back to emotions request."""
+        self.logger.debug("Returning to Emotions tab")
+        self.tab_widget.setCurrentIndex(1)  # Emotions tab
+
+    def _on_refinement_save_requested(self, voice_name: str, selected_emotions: list):
+        """
+        Handle save request from refinement panel.
+
+        Saves the voice with emotion subfolders to the library.
+
+        Args:
+            voice_name: Name for the saved voice
+            selected_emotions: List of emotion IDs with complete extraction
+        """
+        self.logger.info(f"Saving voice '{voice_name}' with emotions: {selected_emotions}")
+
+        if not voice_name:
+            self.refinement_panel.set_save_error("Voice name is required")
+            return
+
+        if not selected_emotions or "neutral" not in selected_emotions:
+            self.refinement_panel.set_save_error("At least Neutral emotion is required")
+            return
+
+        # Validate voice name
+        invalid_chars = '<>:"/\\|?*'
+        if any(char in voice_name for char in invalid_chars):
+            self.refinement_panel.set_save_error(f"Name cannot contain: {invalid_chars}")
+            return
+
+        # Determine save location
+        save_dir = self._get_embeddings_save_dir() / voice_name
+
+        # Check for existing voice
+        if save_dir.exists():
+            reply = QMessageBox.question(
+                self, "Voice Exists",
+                f"A voice named '{voice_name}' already exists.\n\nDo you want to replace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # Start save
+        self.refinement_panel.set_saving(True, "Saving voice...")
+
+        try:
+            # Create voice directory
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            # Get audio paths from refinement panel
+            audio_paths = self.refinement_panel.get_audio_paths()
+
+            # Determine which tiers were extracted
+            tiers_extracted = []
+            current_tier = "quality"
+            if self._tts_service:
+                current_tier = self._tts_service.get_quality_tier()
+            current_tier_short = "1.7" if current_tier == "quality" else "0.6"
+            tiers_extracted.append(current_tier_short)
+
+            # Check if dual-tier extraction was done by looking for other tier embeddings
+            other_tier_short = "0.6" if current_tier_short == "1.7" else "1.7"
+            # Check first emotion for other tier embedding
+            if selected_emotions:
+                other_tier_path = self._session_manager.get_emotion_embedding_path(
+                    selected_emotions[0], tier=other_tier_short
+                )
+                if other_tier_path.exists():
+                    tiers_extracted.append(other_tier_short)
+
+            self.logger.debug(f"Tiers to save: {tiers_extracted}")
+
+            # Copy embeddings and audio for each emotion
+            for emotion in selected_emotions:
+                # Create emotion subfolder
+                emotion_dir = save_dir / emotion
+                emotion_dir.mkdir(exist_ok=True)
+
+                # Copy tier-specific embeddings
+                for tier_short in tiers_extracted:
+                    src_embedding = self._session_manager.get_emotion_embedding_path(emotion, tier=tier_short)
+                    if src_embedding.exists():
+                        # Create tier subfolder
+                        tier_dir = emotion_dir / tier_short
+                        tier_dir.mkdir(exist_ok=True)
+                        dest_embedding = tier_dir / "embedding.pt"
+                        shutil.copy2(src_embedding, dest_embedding)
+                        self.logger.debug(f"Copied {emotion}/{tier_short} embedding")
+
+                # Copy source audio (shared at emotion level)
+                src_source_audio = self._session_manager.get_emotion_source_audio_path(emotion)
+                if src_source_audio.exists():
+                    dest_source_audio = emotion_dir / "source_audio.wav"
+                    shutil.copy2(src_source_audio, dest_source_audio)
+                    self.logger.debug(f"Copied {emotion} source audio")
+
+            # Copy preview audio if exists
+            preview_path = self._session_manager.session_dir / "refinement_preview.wav"
+            if preview_path.exists():
+                dest_preview = save_dir / "preview.wav"
+                shutil.copy2(preview_path, dest_preview)
+
+            # Create metadata.json with tier-aware schema (v3.0)
+            description = self.refinement_panel.get_voice_description()
+
+            # Get transcription (ref_text) for TTS generation
+            # Priority: clone_transcript (Clone workflow) > preview_text (VoiceDesign workflow)
+            session_data = self._session_manager.load_session_data()
+            transcription = None
+            if session_data:
+                transcription = session_data.get("clone_transcript") or session_data.get("preview_text")
+
+            # Build available_tiers mapping: {emotion: [tiers]}
+            available_tiers = {}
+            for emotion in selected_emotions:
+                available_tiers[emotion] = tiers_extracted
+
+            metadata = {
+                "version": "3.0",
+                "name": voice_name,
+                "description": description,
+                "transcription": transcription,  # ref_text for TTS generation
+                "voice_type": "embedding",
+                "available_emotions": selected_emotions,
+                "available_tiers": available_tiers,
+                "emotion_capable": True,
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+            }
+            metadata_path = save_dir / "metadata.json"
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+            # Success
+            self.refinement_panel.set_save_complete(voice_name)
+            self.set_has_unsaved_work(False)
+            self.voice_saved.emit(voice_name)
+
+            # QA Round 2 Item #4: Change Cancel to Close after successful save
+            self.cancel_button.setText("Close")
+
+            self.logger.info(f"Voice '{voice_name}' saved to {save_dir} with {len(selected_emotions)} emotions")
+
+        except Exception as e:
+            self.logger.error(f"Failed to save voice: {e}")
+            self.refinement_panel.set_save_error(str(e))
+
+    # =========================================================================
+    # QA8: From Sample tab removed - clone functionality moved to Clone sub-tab
+    # Core transcription/extraction methods retained for Clone sub-tab use
+    # =========================================================================
+
+    async def _transcribe_audio(self, file_path: str) -> str:
+        """
+        Transcribe audio file using whisper service.
+
+        Args:
+            file_path: Path to the audio file
+
+        Returns:
+            Transcribed text
+        """
+        from pathlib import Path
+
+        self.logger.debug(f"Starting transcription of {file_path}")
+
+        result = await self._whisper_service.transcribe_file(
+            file_path=Path(file_path),
+            language=None  # Auto-detect
+        )
+
+        return result.text
+
+    async def _extract_voice_embedding(
+        self,
+        audio_path: str,
+        transcript: str,
+        preview_text: str,
+        language: str
+    ) -> Path:
+        """
+        Extract voice embedding from audio sample (QA6 fix).
+
+        This method:
+        1. Extracts the voice clone prompt (embedding) from reference audio
+        2. Saves the embedding to session directory as embedding.pt
+        3. Generates a preview using that embedding to confirm voice capture
+        4. Returns the preview audio path
+
+        Args:
+            audio_path: Path to the audio file
+            transcript: Transcript of the audio
+            preview_text: Text to use for preview generation
+            language: Language for TTS generation
+
+        Returns:
+            Path to the generated preview audio
+        """
+        import torch
+        from pathlib import Path as PathLib
+
+        ref_audio_path = PathLib(audio_path)
+        self.logger.debug(f"Extracting embedding from {audio_path}")
+
+        # Step 1: Extract the voice clone prompt (acoustic embedding)
+        self.logger.info("Step 1: Extracting voice clone prompt...")
+        try:
+            voice_clone_prompt = await self._tts_service.create_voice_clone_prompt(
+                ref_audio=ref_audio_path,
+                ref_text=transcript
+            )
+        except Exception as e:
+            self.logger.error(f"Voice clone prompt extraction failed: {e}")
+            raise RuntimeError(f"Embedding extraction failed: {e}")
+
+        # Move tensors to CPU before saving for cross-device compatibility
+        if voice_clone_prompt.ref_code is not None:
+            voice_clone_prompt.ref_code = voice_clone_prompt.ref_code.cpu()
+        if voice_clone_prompt.ref_spk_embedding is not None:
+            voice_clone_prompt.ref_spk_embedding = voice_clone_prompt.ref_spk_embedding.cpu()
+
+        # Step 2: Save embedding to session directory
+        embedding_path = self._session_manager.session_dir / "embedding.pt"
+        torch.save(voice_clone_prompt, str(embedding_path))
+
+        # Verify save was successful by reloading
+        try:
+            verify_prompt = torch.load(str(embedding_path), map_location='cpu', weights_only=False)
+            if verify_prompt.ref_spk_embedding is None:
+                raise ValueError("Embedding verification failed: ref_spk_embedding is None")
+            self.logger.info(f"Step 2: Saved and verified embedding to {embedding_path}")
+        except Exception as verify_error:
+            self.logger.error(f"Embedding verification failed: {verify_error}")
+            raise RuntimeError(f"Failed to save embedding correctly: {verify_error}")
+
+        # Step 3: Generate preview using the extracted embedding
+        self.logger.info("Step 3: Generating preview with embedding...")
+        response = await self._tts_service.generate_with_embedding(
+            text=preview_text,
+            embedding_path=embedding_path,
+            language=language if language != "Auto" else "Auto",
+            streaming=False,
+        )
+
+        if not response.success:
+            raise RuntimeError(response.error_message or "Preview generation failed")
+
+        # Step 4: Save preview audio to session directory
+        audio_data = response.audio_data
+        sample_rate = response.sample_rate
+
+        preview_path = self._session_manager.session_dir / "extraction_preview.wav"
+
+        # Convert and save audio
+        if audio_data.dtype != np.int16:
+            audio_data = np.clip(audio_data, -1.0, 1.0)
+            audio_data = (audio_data * 32767).astype(np.int16)
+
+        wavfile.write(str(preview_path), sample_rate, audio_data)
+        self.logger.info(f"Step 4: Saved extraction preview to {preview_path}")
+
+        return preview_path
+
+    # =========================================================================
+    # QA8: Clone Tab Handlers
+    # =========================================================================
+
+    def _on_clone_transcribe_requested(self, file_path: str):
+        """
+        Handle transcription request from Clone tab (QA8).
+
+        Args:
+            file_path: Path to the audio file to transcribe
+        """
+        self.logger.info(f"Clone transcription requested for: {file_path}")
+
+        # Try to get whisper_service from parent if not set
+        if not self._whisper_service:
+            self.logger.debug("Whisper service not set, trying to get from parent")
+            parent = self.parent()
+            if parent and hasattr(parent, 'whisper_service') and parent.whisper_service:
+                self._whisper_service = parent.whisper_service
+                self.logger.info("Got whisper_service from parent")
+
+        # Check if whisper service is available
+        if not self._whisper_service:
+            self.logger.error("Whisper service not available")
+            self.description_panel.set_clone_transcription_error(
+                "Transcription service not available. Please close this dialog and try again in a moment."
+            )
+            return
+
+        # Check if service is running
+        try:
+            if hasattr(self._whisper_service, 'is_running') and not self._whisper_service.is_running():
+                self.logger.error("Whisper service not running")
+                self.description_panel.set_clone_transcription_error(
+                    "Transcription service is still initializing. Please wait a moment and try again."
+                )
+                return
+        except Exception as e:
+            self.logger.warning(f"Could not check whisper service status: {e}")
+
+        # Start transcription
+        self.description_panel.set_clone_transcribing(True, "Transcribing...")
+
+        # Run async transcription
+        self._run_async_task(
+            self._transcribe_audio(file_path),
+            on_success=self._on_clone_transcription_complete,
+            on_error=self._on_clone_transcription_failed
+        )
+
+    def _on_clone_transcription_complete(self, text: str):
+        """
+        Handle successful clone transcription (QA8).
+
+        Args:
+            text: Transcribed text
+        """
+        self.logger.info(f"Clone transcription complete: {len(text)} characters")
+        self.description_panel.set_clone_transcription_complete(text)
+
+    def _on_clone_transcription_failed(self, error: Exception):
+        """
+        Handle clone transcription failure (QA8).
+
+        Args:
+            error: The exception that occurred
+        """
+        self.logger.error(f"Clone transcription failed: {error}")
+        self.description_panel.set_clone_transcription_error(str(error))
+
+    def _on_clone_proceed_requested(self, audio_path: str, transcript: str, voice_name: str):
+        """
+        Handle Proceed request from Clone tab (QA8).
+
+        Transfers sample data to Emotions tab for building voice with emotion variants.
+
+        Args:
+            audio_path: Path to the audio file
+            transcript: Transcript of the audio
+            voice_name: Name for the voice
+        """
+        self.logger.info(f"Clone proceed requested: audio={audio_path}, name={voice_name}")
+
+        from pathlib import Path as PathLib
+        audio_path_obj = PathLib(audio_path)
+
+        # Set voice name in Refinement panel
+        if voice_name:
+            self.refinement_panel.set_voice_name(voice_name)
+
+        # QA Round 3: Don't set voice_description from transcript
+        # Voice Description = voice characteristics (e.g., "warm female voice")
+        # Transcript = what was spoken (e.g., "Hello, this is a sample")
+        # These are different things and should not be linked.
+        # Leave voice_description empty - user can enter their own if needed for non-neutral emotions.
+
+        # Set preview text in emotions panel from transcript
+        # This IS correct - preview_text is what the generated audio should speak
+        if transcript:
+            preview_text = transcript[:100] + "..." if len(transcript) > 100 else transcript
+            self.emotions_panel.set_preview_text(preview_text)
+
+        # Transfer sample audio to Emotions-Neutral tab
+        if audio_path_obj.exists():
+            self.emotions_panel.load_neutral_sample(
+                audio_path=audio_path_obj,
+                embedding_path=None,  # No embedding yet
+                duration=None  # Will be auto-detected
+            )
+            self.logger.info(f"Transferred sample to Neutral tab: {audio_path}")
+
+        # Save session data for recovery (QA8: include clone_transcript for extraction)
+        # QA Round 3: Don't save transcript as voice_description - they are different things
+        self._session_manager.save_session_data(
+            preview_text=transcript[:100] if transcript else "",
+            voice_name=voice_name or "",
+            language="Auto",
+            clone_transcript=transcript or ""  # QA8: Store for ref_text during extraction
+        )
+
+        # Switch to Emotions tab (index 1)
+        self.tab_widget.setCurrentIndex(1)
+        self.logger.info("Switched to Emotions tab from Clone tab")
+
+    # =========================================================================
+    # QA6: Per-Emotion Transcription Handlers
+    # =========================================================================
+
+    def _on_emotion_transcribe_requested(self, emotion: str, file_path: str):
+        """
+        QA6: Handle transcription request from Emotions tab.
+
+        Args:
+            emotion: Emotion ID (e.g., "neutral", "happy")
+            file_path: Path to the audio file to transcribe
+        """
+        self.logger.info(f"Emotion transcription requested for {emotion}: {file_path}")
+
+        # Try to get whisper_service from parent if not set
+        if not self._whisper_service:
+            self.logger.debug("Whisper service not set, trying to get from parent")
+            parent = self.parent()
+            if parent and hasattr(parent, 'whisper_service') and parent.whisper_service:
+                self._whisper_service = parent.whisper_service
+                self.logger.info("Got whisper_service from parent")
+
+        # Check if whisper service is available
+        if not self._whisper_service:
+            self.logger.error("Whisper service not available")
+            self.emotions_panel.set_emotion_transcription_error(
+                emotion, "Transcription service not available"
+            )
+            return
+
+        # Check if service is running
+        try:
+            if hasattr(self._whisper_service, 'is_running') and not self._whisper_service.is_running():
+                self.logger.error("Whisper service not running")
+                self.emotions_panel.set_emotion_transcription_error(
+                    emotion, "Transcription service is still initializing"
+                )
+                return
+        except Exception as e:
+            self.logger.warning(f"Could not check whisper service status: {e}")
+
+        # Start transcription
+        self.emotions_panel.set_emotion_transcribing(emotion, True, "Transcribing...")
+
+        # Run async transcription with emotion context
+        self._run_async_task(
+            self._transcribe_audio(file_path),
+            on_success=lambda text: self._on_emotion_transcription_complete(emotion, text),
+            on_error=lambda error: self._on_emotion_transcription_failed(emotion, error)
+        )
+
+    def _on_emotion_transcription_complete(self, emotion: str, text: str):
+        """
+        QA6: Handle successful emotion transcription.
+
+        Args:
+            emotion: Emotion ID
+            text: Transcribed text
+        """
+        self.logger.info(f"Emotion transcription complete for {emotion}: {len(text)} characters")
+        self.emotions_panel.set_emotion_transcription_complete(emotion, text)
+
+    def _on_emotion_transcription_failed(self, emotion: str, error: Exception):
+        """
+        QA6: Handle emotion transcription failure.
+
+        Args:
+            emotion: Emotion ID
+            error: The exception that occurred
+        """
+        self.logger.error(f"Emotion transcription failed for {emotion}: {error}")
+        self.emotions_panel.set_emotion_transcription_error(emotion, str(error))
+
+    # =========================================================================
+    # Footer
+    # =========================================================================
+
+    def _create_footer(self, layout: QVBoxLayout):
+        """Create the footer with New Voice and Cancel buttons.
+
+        QA8: Saving happens in Refinement tab or From Description-Clone sub-tab.
+        """
+        footer_layout = QHBoxLayout()
+        footer_layout.setSpacing(8)
+
+        # QA Round 2 Item #6: Left side - New Voice button to start fresh
+        self.new_voice_button = QPushButton("New Voice")
+        self.new_voice_button.setObjectName("new_voice_button")
+        self.new_voice_button.setToolTip("Clear session and start with a new voice")
+        self.new_voice_button.clicked.connect(self._on_new_voice_clicked)
+        footer_layout.addWidget(self.new_voice_button)
+
+        footer_layout.addStretch()
+
+        # Right side - Cancel button only
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setObjectName("cancel_button")
+        self.cancel_button.clicked.connect(self._on_cancel_clicked)
+        footer_layout.addWidget(self.cancel_button)
+
+        layout.addLayout(footer_layout)
+
+    def _setup_accessibility(self):
+        """Configure accessibility properties for the dialog."""
+        # Dialog
+        self.setAccessibleName("Voice Design Studio")
+        self.setAccessibleDescription(
+            "Dialog for creating custom voices from descriptions, cloning from audio, and adding emotion variants"
+        )
+
+        # Tab widget
+        self.tab_widget.setAccessibleName("Voice creation workflow")
+        self.tab_widget.setAccessibleDescription(
+            "Workflow tabs: From Description, Emotions, and Refinement"
+        )
+
+        # Buttons
+        self.new_voice_button.setAccessibleName("New Voice")
+        self.new_voice_button.setAccessibleDescription("Clear session and start a new voice")
+        self.cancel_button.setAccessibleName("Cancel")
+        self.cancel_button.setAccessibleDescription("Close dialog without saving")
+
+    def _setup_shortcuts(self):
+        """Configure keyboard shortcuts."""
+        # Escape to close
+        escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        escape_shortcut.activated.connect(self._on_cancel_clicked)
+
+        # Tab switching with Ctrl+1 through Ctrl+3
+        # QA8: Removed Ctrl+4 (From Sample tab removed)
+        tab1_shortcut = QShortcut(QKeySequence("Ctrl+1"), self)
+        tab1_shortcut.activated.connect(lambda: self.tab_widget.setCurrentIndex(0))
+
+        tab2_shortcut = QShortcut(QKeySequence("Ctrl+2"), self)
+        tab2_shortcut.activated.connect(lambda: self.tab_widget.setCurrentIndex(1))
+
+        tab3_shortcut = QShortcut(QKeySequence("Ctrl+3"), self)
+        tab3_shortcut.activated.connect(lambda: self.tab_widget.setCurrentIndex(2))
+
+    def _on_tab_changed(self, index: int):
+        """
+        Handle tab change events.
+
+        QA8: Updated for 3 tabs (Description, Emotions, Refinement)
+
+        Args:
+            index: Index of the newly selected tab
+        """
+        tab_names = ["From Description", "Emotions", "Refinement"]
+        tab_name = tab_names[index] if index < len(tab_names) else "Unknown"
+        self.logger.debug(f"Tab changed to: {tab_name} (index {index})")
+
+        # Sync voice description to Emotions panel when switching to it
+        if index == 1:  # Emotions tab
+            description = self.description_panel.get_description()
+            preview_text = self.description_panel.get_preview_text()
+            self.emotions_panel.set_voice_description(description)
+            self.emotions_panel.set_preview_text(preview_text)
+
+    def _on_cancel_clicked(self):
+        """Handle cancel button click or Escape key."""
+        self.logger.debug("Cancel clicked")
+
+        # Story 4.2: Show confirmation if user has unsaved selection
+        if self._has_unsaved_selection():
+            reply = QMessageBox.question(
+                self, "Unsaved Selection",
+                "You have a selected variant that hasn't been saved.\n\n"
+                "Your generated variants will be preserved and you can save them later.\n\n"
+                "Close anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return  # User cancelled, stay in dialog
+
+        self.dialog_closing.emit(self._has_unsaved_work)
+
+        # Story 4.1 REVISED: Do NOT cleanup session on close
+        # Temp files persist so user can reopen and save additional variants
+        # Cleanup happens only on Regenerate (Story 1.9) or orphan cleanup (>24h)
+
+        self.reject()
+
+    def _on_new_voice_clicked(self):
+        """
+        QA Round 2 Item #6: Handle New Voice button click.
+
+        Clears the session and resets all panels for a fresh start.
+        """
+        self.logger.debug("New Voice clicked")
+
+        # Confirm if there's unsaved work
+        if self._has_unsaved_work or self._has_unsaved_selection():
+            reply = QMessageBox.question(
+                self, "Start New Voice",
+                "This will clear your current session.\n\n"
+                "Any unsaved variants will be lost.\n\n"
+                "Start a new voice?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # Clear session files
+        if self._session_manager:
+            self._session_manager.cleanup()
+            # Reinitialize session manager for new session
+            self._session_manager = SessionManager()
+
+        # Clear all panels
+        self.description_panel.clear()
+        self.emotions_panel.clear()
+        self.refinement_panel.clear()
+
+        # Reset to first tab
+        self.tab_widget.setCurrentIndex(0)
+
+        # Reset unsaved work flag
+        self._has_unsaved_work = False
+
+        # Reset cancel button text
+        self.cancel_button.setText("Cancel")
+
+        self.logger.info("Started new voice session")
+
+    def _on_save_clicked(self):
+        """Handle save button click."""
+        self.logger.debug("Save clicked")
+
+        # Get current tab
+        if self.tab_widget.currentIndex() == 0:  # Description tab
+            self._save_from_description()
+        else:
+            # Sample tab save will be implemented in Story 2.x
+            self.logger.warning("Save from sample tab not yet implemented")
+
+    def _save_from_description(self):
+        """Save voice from description panel (Story 1.5)."""
+        voice_name = self.description_panel.get_voice_name()
+        embedding_path = self.description_panel.get_generated_embedding_path()
+        description = self.description_panel.get_description()
+
+        if not voice_name:
+            QMessageBox.warning(self, "Invalid Name", "Please enter a voice name.")
+            return
+
+        if not embedding_path or not embedding_path.exists():
+            QMessageBox.warning(self, "No Embedding", "No generated embedding found. Please generate a voice first.")
+            return
+
+        # Validate voice name (no special characters that would break paths)
+        invalid_chars = '<>:"/\\|?*'
+        if any(char in voice_name for char in invalid_chars):
+            QMessageBox.warning(
+                self, "Invalid Name",
+                f"Voice name cannot contain: {invalid_chars}"
+            )
+            return
+
+        # Determine save location
+        save_dir = self._get_embeddings_save_dir() / voice_name
+
+        # Check for existing voice (overwrite warning)
+        if save_dir.exists():
+            reply = QMessageBox.question(
+                self, "Voice Exists",
+                f"A voice named '{voice_name}' already exists.\n\nDo you want to replace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # Start save operation
+        self.description_panel.set_saving(True, "Saving...")
+
+        try:
+            # Create directory
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            # Copy embedding file
+            dest_embedding = save_dir / "embedding.pt"
+            shutil.copy2(embedding_path, dest_embedding)
+
+            # Copy audio preview if exists
+            audio_path = self.description_panel.get_generated_audio_path()
+            if audio_path and audio_path.exists():
+                dest_audio = save_dir / "preview.wav"
+                shutil.copy2(audio_path, dest_audio)
+
+            # Get transcription (ref_text) for TTS generation - use preview text
+            transcription = self.description_panel.get_preview_text()
+
+            # Create metadata.json
+            metadata = {
+                "name": voice_name,
+                "description": description,
+                "transcription": transcription,  # ref_text for TTS generation
+                "voice_type": "designed",
+                "emotion_capable": True,
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+            }
+            metadata_path = save_dir / "metadata.json"
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+            # Success
+            self.description_panel.set_save_complete(voice_name)
+            self.set_has_unsaved_work(False)
+            self.voice_saved.emit(voice_name)
+
+            # QA Round 2 Item #4: Change Cancel to Close after successful save
+            self.cancel_button.setText("Close")
+
+            self.logger.info(f"Voice saved successfully: {voice_name} at {save_dir}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to save voice: {e}")
+            self.description_panel.set_save_error(str(e))
+
+    def _get_embeddings_save_dir(self) -> Path:
+        """
+        Get the directory for saving voice embeddings.
+
+        Returns:
+            Path to voice_files/embeddings directory
+        """
+        # QA8: Use portable paths for consistency with VoiceProfileManager loading
+        # This ensures saved voices are found when the app rescans
+        from myvoice.utils.portable_paths import get_voice_files_path
+        base_dir = get_voice_files_path() / "embeddings"
+        return base_dir
+
+    def _on_refine_requested(self):
+        """
+        QA7: Handle refine request from description panel.
+
+        Transfers all 5 generated variants to the Emotions-Neutral tab
+        for emotion variant creation workflow.
+
+        Flow:
+        1. Get all 5 variant paths from description panel
+        2. Copy variant files to emotion_variants/neutral/ in session
+        3. Load variants into Emotions panel Neutral tab
+        4. Pre-select the variant that was selected in Description
+        5. Copy Voice Name to Refinement tab
+        6. Set voice description and preview text in Emotions panel
+        7. Switch to Emotions tab
+        """
+        self.logger.info("QA7: Refine voice requested - transferring to Emotions tab")
+
+        # Get selected variant index first
+        selected_index = self.description_panel.get_selected_variant_index()
+        if selected_index is None:
+            self.logger.warning("No variant selected for refinement")
+            QMessageBox.warning(
+                self, "No Selection",
+                "Please select a voice variant to refine."
+            )
+            return
+
+        # Get all variant paths (may include None for incomplete)
+        all_variant_paths = self.description_panel.get_all_variant_paths()
+        if not all_variant_paths or not any(v for v in all_variant_paths if v):
+            self.logger.warning("No complete variants found")
+            QMessageBox.warning(
+                self, "No Variants",
+                "No generated variants found. Please generate voices first."
+            )
+            return
+
+        # Copy variant files to emotion_variants/neutral/
+        copied_variants = []
+        for idx, variant_data in enumerate(all_variant_paths):
+            if variant_data is None:
+                copied_variants.append(None)
+                continue
+
+            audio_path, embedding_path, duration = variant_data
+            if audio_path and audio_path.exists():
+                # Get destination path in emotion_variants/neutral/
+                dest_path = self._session_manager.get_emotion_variant_path("neutral", idx, "wav")
+                try:
+                    shutil.copy2(audio_path, dest_path)
+                    # Use dest_path as both audio and embedding (placeholder)
+                    copied_variants.append((dest_path, dest_path, duration or 3.0))
+                    self.logger.debug(f"Copied variant {idx} to {dest_path}")
+                except Exception as e:
+                    self.logger.error(f"Failed to copy variant {idx}: {e}")
+                    copied_variants.append(None)
+            else:
+                copied_variants.append(None)
+
+        # Filter out None entries for loading (but keep indices correct)
+        valid_variants = [(audio, emb, dur) for v in copied_variants if v for audio, emb, dur in [v]]
+        if not valid_variants:
+            self.logger.error("No variants were copied successfully")
+            return
+
+        # Get voice description and preview text
+        description = self.description_panel.get_description()
+        preview_text = self.description_panel.get_preview_text()
+        voice_name = self.description_panel.get_voice_name()
+        language = self.description_panel.get_language()
+
+        # QA7: Save session data for recovery
+        self._session_manager.save_session_data(
+            voice_description=description,
+            preview_text=preview_text,
+            voice_name=voice_name,
+            language=language
+        )
+
+        # Set up Emotions panel
+        self.emotions_panel.set_voice_description(description)
+        self.emotions_panel.set_preview_text(preview_text)
+
+        # Load variants into Neutral tab with selection
+        # Build list preserving indices
+        variants_for_loading = []
+        for v in copied_variants:
+            if v:
+                variants_for_loading.append(v)
+        self.emotions_panel.load_neutral_variants(variants_for_loading, selected_index)
+
+        # Copy voice name to Refinement tab
+        if voice_name:
+            self.refinement_panel.set_voice_name(voice_name)
+
+        # Switch to Emotions tab (index 1)
+        self.tab_widget.setCurrentIndex(1)
+
+        # QA Round 2 Item #1: Switch to Happy tab instead of Neutral
+        # This prevents users from accidentally regenerating Neutral when they
+        # think "Generate Variants" does all emotions
+        self.emotions_panel.select_emotion_tab("happy")
+
+        self.logger.info(
+            f"QA7: Transferred {len(valid_variants)} variants to Emotions-Happy tab, "
+            f"selected={selected_index}, voice_name='{voice_name}'"
+        )
+
+    def closeEvent(self, event):
+        """
+        Handle dialog close event.
+
+        Emits dialog_closing signal. Story 4.1 REVISED: Does NOT cleanup
+        session files - they persist so user can save additional variants later.
+
+        Args:
+            event: Close event
+        """
+        self.logger.debug("Dialog close event")
+
+        # QA Round 2 Item #6: Save current tab state for restoration
+        current_tab = self.tab_widget.currentIndex()
+        self._session_manager.save_session_data(current_tab_index=current_tab)
+        self.logger.debug(f"Saved tab state: {current_tab}")
+
+        # Story 4.2: Show confirmation if user has unsaved selection
+        if self._has_unsaved_selection():
+            reply = QMessageBox.question(
+                self, "Unsaved Selection",
+                "You have a selected variant that hasn't been saved.\n\n"
+                "Your generated variants will be preserved and you can save them later.\n\n"
+                "Close anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()  # Cancel the close
+                return
+
+        self.dialog_closing.emit(self._has_unsaved_work)
+
+        # Story 4.1 REVISED: Do NOT cleanup session on close
+        # Temp files persist so user can reopen and save additional variants
+        # Cleanup happens only on Regenerate (Story 1.9) or orphan cleanup (>24h)
+
+        super().closeEvent(event)
+
+    def _cleanup_session(self):
+        """
+        Clean up the session directory and all temp files (Story 4.2).
+
+        NOTE: This is NOT called on dialog close per Story 4.1 revision.
+        Reserved for orphan cleanup (sessions >24h old) on app restart.
+        For variant cleanup on Regenerate, use _session_manager.clear_variant_files().
+        """
+        if self._session_manager and not self._session_manager.is_cleaned:
+            self.logger.info(f"Cleaning up session: {self._session_manager.session_id}")
+            self._session_manager.cleanup()
+
+    @property
+    def session_dir(self) -> Path:
+        """
+        Get the session directory path for temp file storage.
+
+        Returns:
+            Path to the session directory
+        """
+        return self._session_manager.session_dir
+
+    def get_variant_output_path(self, variant_index: int, extension: str) -> Path:
+        """
+        Get output path for a variant file within the session directory.
+
+        Use this when generating variants to ensure files are written to
+        the session directory for proper cleanup (Story 4.1).
+
+        Args:
+            variant_index: Index of the variant (1-5)
+            extension: File extension without dot ("pt" or "wav")
+
+        Returns:
+            Path to write the variant file
+
+        Example:
+            embedding_path = dialog.get_variant_output_path(1, "pt")
+            audio_path = dialog.get_variant_output_path(1, "wav")
+        """
+        return self._session_manager.get_variant_path(variant_index, extension)
+
+    def set_has_unsaved_work(self, has_work: bool):
+        """
+        Update the unsaved work flag.
+
+        Args:
+            has_work: True if there is unsaved work
+        """
+        self._has_unsaved_work = has_work
+
+    def _has_unsaved_selection(self) -> bool:
+        """
+        Check if user has a variant selected but not saved (Story 4.2).
+
+        Used to show confirmation dialog on close.
+
+        Returns:
+            True if there's a selected variant that hasn't been saved
+        """
+        # Check description tab
+        if self.tab_widget.currentIndex() == 0:
+            return (self.description_panel.has_variant_selection() and
+                    not self.description_panel.get_voice_name())
+
+        # Check sample tab (future: add similar logic when implemented)
+        return False
+
+    def get_active_path(self) -> str:
+        """
+        Get the currently active creation path.
+
+        Returns:
+            "description" or "sample" based on active tab
+        """
+        return "description" if self.tab_widget.currentIndex() == 0 else "sample"
