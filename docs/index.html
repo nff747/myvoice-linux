@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>nff747 // Open Source Software & AI Project Hub</title>
-  <meta name="description" content="Explore and download high-performance open-source AI, WebGPU, and systems software built by @nff747.">
+  <title>nff747 // Next-Gen AI & Systems Project Hub</title>
+  <meta name="description" content="Explore and download high-performance open-source AI, WebGPU, and systems software engineered by @nff747.">
   
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
   
   <!-- Tailwind CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -19,32 +19,39 @@
       theme: {
         extend: {
           fontFamily: {
-            sans: ['Inter', 'sans-serif'],
-            mono: ['JetBrains Mono', 'monospace'],
+            sans: ['"Plus Jakarta Sans"', 'Inter', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
           },
           colors: {
             brand: {
               purple: '#a855f7',
-              blue: '#2f81f7',
-              cyan: '#38bdf8',
-              green: '#2ea043',
-              dark: '#090d16',
-              card: 'rgba(22, 27, 34, 0.75)',
-              border: 'rgba(48, 54, 61, 0.6)',
+              violet: '#8b5cf6',
+              cyan: '#06b6d4',
+              blue: '#3b82f6',
+              emerald: '#10b981',
+              dark: '#060911',
+              surface: 'rgba(15, 23, 42, 0.75)',
+              border: 'rgba(255, 255, 255, 0.08)',
             }
           },
           animation: {
-            'glow-pulse': 'glow 3s ease-in-out infinite',
-            'float': 'float 6s ease-in-out infinite',
+            'glow-pulse': 'glow 4s ease-in-out infinite',
+            'float-slow': 'float 7s ease-in-out infinite',
+            'aurora': 'aurora 15s linear infinite',
           },
           keyframes: {
             glow: {
-              '0%, 100%': { opacity: '0.6', transform: 'scale(1)' },
-              '50%': { opacity: '1', transform: 'scale(1.05)' },
+              '0%, 100%': { opacity: '0.5', transform: 'scale(1)' },
+              '50%': { opacity: '0.9', transform: 'scale(1.08)' },
             },
             float: {
               '0%, 100%': { transform: 'translateY(0px)' },
-              '50%': { transform: 'translateY(-10px)' },
+              '50%': { transform: 'translateY(-12px)' },
+            },
+            aurora: {
+              '0%': { backgroundPosition: '0% 50%' },
+              '50%': { backgroundPosition: '100% 50%' },
+              '100%': { backgroundPosition: '0% 50%' }
             }
           }
         }
@@ -57,8 +64,8 @@
 
   <style>
     body {
-      background-color: #080c14;
-      color: #e6edf3;
+      background-color: #05070e;
+      color: #f1f5f9;
       overflow-x: hidden;
     }
     #canvas-container {
@@ -70,39 +77,84 @@
       z-index: 0;
       pointer-events: none;
     }
+    .glass-nav {
+      background: rgba(8, 12, 22, 0.82);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
     .glass-panel {
-      background: rgba(15, 20, 30, 0.7);
+      background: rgba(13, 19, 33, 0.65);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.6), inset 0 1px 1px 0 rgba(255, 255, 255, 0.1);
+    }
+    .glass-card {
+      background: rgba(14, 20, 36, 0.72);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
-    }
-    .project-card {
-      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.15s ease-out;
       transform-style: preserve-3d;
+      perspective: 1000px;
+      position: relative;
+      overflow: hidden;
     }
-    .project-card:hover {
+    .glass-card:hover {
       border-color: rgba(168, 85, 247, 0.5);
-      box-shadow: 0 20px 40px -15px rgba(168, 85, 247, 0.25), 0 0 20px 2px rgba(56, 189, 248, 0.15);
+      box-shadow: 0 20px 50px -15px rgba(168, 85, 247, 0.3), 0 0 25px 2px rgba(6, 182, 212, 0.15);
     }
-    .glow-gradient {
-      background: linear-gradient(135deg, #a855f7 0%, #38bdf8 50%, #2ea043 100%);
+    .card-glare {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      background: radial-gradient(circle 300px at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(255, 255, 255, 0.12), transparent 70%);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      z-index: 10;
+    }
+    .glass-card:hover .card-glare {
+      opacity: 1;
+    }
+    .hero-gradient {
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 40%, #a855f7 75%, #06b6d4 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-    /* Custom Scrollbar */
+    .aurora-bg {
+      position: absolute;
+      top: -15%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 90vw;
+      max-width: 1200px;
+      height: 500px;
+      background: radial-gradient(ellipse at center, rgba(168, 85, 247, 0.22) 0%, rgba(6, 182, 212, 0.15) 45%, transparent 70%);
+      filter: blur(60px);
+      pointer-events: none;
+      z-index: 0;
+    }
     ::-webkit-scrollbar {
-      width: 8px;
+      width: 6px;
+      height: 6px;
     }
     ::-webkit-scrollbar-track {
-      background: #090d16;
+      background: #05070e;
     }
     ::-webkit-scrollbar-thumb {
-      background: #21262d;
+      background: #1e293b;
       border-radius: 4px;
     }
     ::-webkit-scrollbar-thumb:hover {
       background: #a855f7;
+    }
+    #hero-viz {
+      width: 100%;
+      height: 48px;
     }
   </style>
 </head>
@@ -111,105 +163,186 @@
   <!-- 3D Canvas Background -->
   <div id="canvas-container"></div>
 
+  <!-- Ambient Aurora Glow Behind Hero -->
+  <div class="aurora-bg animate-glow-pulse"></div>
+
   <!-- Main Content Wrapper -->
   <div class="relative z-10 flex flex-col min-h-screen">
 
     <!-- Header / Navbar -->
-    <header class="sticky top-0 z-50 glass-panel border-b border-white/10 px-6 py-4">
+    <header class="sticky top-0 z-50 glass-nav px-6 py-3.5 transition-all">
       <div class="max-w-7xl mx-auto flex items-center justify-between">
-        <a href="https://github.com/nff747" target="_blank" class="flex items-center space-x-3 group">
-          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 via-blue-500 to-cyan-400 p-[2px] shadow-lg shadow-purple-500/30 group-hover:scale-105 transition-transform">
-            <div class="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center font-mono font-bold text-lg text-cyan-300">
-              ⚡
+        
+        <!-- Brand Logo -->
+        <a href="https://github.com/nff747" target="_blank" class="flex items-center space-x-3 group" onclick="playClickSound()">
+          <div class="relative">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 via-indigo-500 to-cyan-400 p-[2px] shadow-lg shadow-purple-500/30 group-hover:scale-105 transition-transform duration-300">
+              <div class="w-full h-full bg-[#090d16] rounded-[10px] flex items-center justify-center font-mono font-extrabold text-lg text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-300">
+                ⚡
+              </div>
             </div>
+            <span class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse border-2 border-[#090d16]"></span>
           </div>
           <div>
-            <div class="font-bold text-lg tracking-tight flex items-center gap-2">
-              nff747 <span class="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">Open Source Hub</span>
+            <div class="font-bold text-base sm:text-lg tracking-tight flex items-center gap-2">
+              <span class="text-white group-hover:text-purple-300 transition-colors">nff747</span>
+              <span class="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-mono font-semibold">LABS v2.0</span>
             </div>
-            <div class="text-xs text-gray-400 font-mono">High-Performance AI & Systems Lab</div>
+            <div class="text-[11px] text-slate-400 font-mono flex items-center gap-1.5">
+              <span>High-Performance AI & Systems</span>
+            </div>
           </div>
         </a>
 
-        <div class="flex items-center space-x-4">
-          <a href="https://github.com/nff747" target="_blank" class="hidden sm:flex items-center gap-2 text-sm text-gray-300 hover:text-white bg-white/5 hover:bg-white/10 px-4 py-2 rounded-xl border border-white/10 transition">
+        <!-- Right Controls (Audio SFX Toggle + GitHub + Quick Install) -->
+        <div class="flex items-center space-x-3 sm:space-x-4">
+          
+          <!-- Audio SFX Toggle Button -->
+          <button id="sfx-toggle" onclick="toggleAudioSFX()" class="flex items-center gap-1.5 text-xs font-mono text-slate-400 hover:text-white px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition" title="Toggle Futuristic Sound FX">
+            <span id="sfx-icon">🔊</span>
+            <span class="hidden sm:inline" id="sfx-label">SFX: ON</span>
+          </button>
+
+          <!-- GitHub Profile -->
+          <a href="https://github.com/nff747" target="_blank" onclick="playClickSound()" class="hidden md:flex items-center gap-2 text-xs font-medium text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 px-3.5 py-2 rounded-xl border border-white/10 transition">
             <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-            <span>GitHub Profile</span>
+            <span>GitHub</span>
           </a>
-          <button onclick="openModal('myvoice-linux')" class="flex items-center gap-2 text-sm font-semibold bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white px-4 py-2 rounded-xl shadow-lg shadow-purple-500/25 transition transform active:scale-95">
-            <span>🚀 Quick Install</span>
+
+          <!-- Quick Install CTA -->
+          <button onclick="openModal('myvoice-linux')" class="flex items-center gap-2 text-xs sm:text-sm font-semibold bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-cyan-400 text-white px-4 py-2 rounded-xl shadow-lg shadow-purple-500/25 transition-all transform active:scale-95 duration-200">
+            <span>⚡ Quick Install</span>
           </button>
         </div>
+
       </div>
     </header>
 
     <!-- Hero Section -->
-    <section class="max-w-7xl mx-auto px-6 pt-16 pb-12 text-center relative">
-      <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass-panel border-purple-500/30 text-xs font-mono text-purple-300 mb-6 shadow-lg shadow-purple-900/20 animate-float">
+    <section class="max-w-7xl mx-auto px-6 pt-14 pb-10 text-center relative">
+      
+      <!-- Top Announcement Pill -->
+      <div class="inline-flex items-center gap-2.5 px-3.5 py-1.5 rounded-full glass-panel border-purple-500/30 text-xs font-mono text-purple-300 mb-6 shadow-xl shadow-purple-900/20 animate-float-slow">
         <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-        Zero-Setup Direct Downloads & Universal 1-Click Installers
+        <span>MyVoice Linux + AI Auto-Reply & Voice Cloning Engine</span>
+        <span class="text-slate-500">|</span>
+        <span class="text-cyan-400 font-bold">1-Click Install</span>
       </div>
 
-      <h1 class="text-4xl sm:text-6xl font-extrabold tracking-tight mb-6">
-        Next-Gen Software for <br class="hidden sm:block">
-        <span class="glow-gradient">Creators, AI & Systems Engineers</span>
+      <!-- Main Headline -->
+      <h1 class="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight mb-6 leading-[1.1]">
+        Next-Generation Code for <br>
+        <span class="hero-gradient">AI, Audio & High-Speed Systems</span>
       </h1>
 
-      <p class="max-w-2xl mx-auto text-gray-300 text-base sm:text-lg mb-10 leading-relaxed font-light">
-        High-performance open-source utilities built for speed. Featuring zero-shot voice cloning, WebGPU neural engines, 3D character rigging, and low-latency systems.
+      <!-- Subtitle -->
+      <p class="max-w-2xl mx-auto text-slate-300 text-base sm:text-lg mb-8 leading-relaxed font-light">
+        High-throughput open-source architectures engineered for zero latency. Featuring zero-shot voice cloning, WebGPU Gaussian splatting, zero-click 3D auto-rigging, and lock-free storage.
       </p>
+
+      <!-- Live Interactive Visualizer + Interactive Terminal Showcase -->
+      <div class="max-w-3xl mx-auto glass-panel rounded-2xl p-5 border border-white/10 shadow-2xl mb-10 text-left relative overflow-hidden">
+        
+        <!-- Visualizer Bar -->
+        <div class="flex items-center justify-between mb-3 border-b border-white/10 pb-3">
+          <div class="flex items-center gap-2 text-xs font-mono text-slate-400">
+            <span class="w-2.5 h-2.5 rounded-full bg-red-500/80"></span>
+            <span class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></span>
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500/80"></span>
+            <span class="ml-2 text-purple-300 font-semibold">myvoice-engine // live audio & inference monitor</span>
+          </div>
+          <div class="flex items-center gap-2 text-[11px] font-mono text-slate-400">
+            <span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">CUDA 12.4</span>
+            <span class="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/30">bfloat16</span>
+          </div>
+        </div>
+
+        <!-- Audio Frequency Waveform Canvas -->
+        <canvas id="hero-viz" class="rounded-lg bg-black/40 border border-white/5 mb-3"></canvas>
+
+        <!-- Interactive Terminal Input / Runner -->
+        <div class="bg-black/60 rounded-xl p-3.5 border border-purple-500/20 font-mono text-xs text-slate-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div class="flex items-center gap-2 overflow-x-auto w-full">
+            <span class="text-purple-400 select-none">$</span>
+            <span id="interactive-cmd" class="text-emerald-300 font-semibold select-all">curl -fsSL https://raw.githubusercontent.com/nff747/myvoice-linux/master/install.sh | bash</span>
+          </div>
+          <button onclick="copyHeroCommand()" id="hero-copy-btn" class="shrink-0 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-semibold flex items-center gap-1.5 transition active:scale-95 text-xs shadow-md shadow-purple-600/30">
+            <span>📋</span>
+            <span id="hero-copy-text">Copy</span>
+          </button>
+        </div>
+
+        <!-- Quick Demo Mode Selector -->
+        <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-white/5 text-[11px] font-mono text-slate-400">
+          <span class="text-slate-500">Quick Switch:</span>
+          <button onclick="setHeroPreset('myvoice')" class="px-2.5 py-1 rounded-md bg-white/5 hover:bg-purple-500/20 text-purple-300 hover:text-white border border-white/10 transition">🎙️ MyVoice Install</button>
+          <button onclick="setHeroPreset('auto-reply')" class="px-2.5 py-1 rounded-md bg-white/5 hover:bg-cyan-500/20 text-cyan-300 hover:text-white border border-white/10 transition">🤖 AI Auto-Reply VC</button>
+          <button onclick="setHeroPreset('webgpu')" class="px-2.5 py-1 rounded-md bg-white/5 hover:bg-indigo-500/20 text-indigo-300 hover:text-white border border-white/10 transition">⚡ WebGPU Splat</button>
+        </div>
+
+      </div>
 
       <!-- Search & Filter Controls -->
       <div class="max-w-3xl mx-auto glass-panel p-3 rounded-2xl border border-white/10 shadow-2xl">
         <div class="flex flex-col sm:flex-row gap-3">
+          
           <!-- Search Bar -->
           <div class="relative flex-1">
-            <svg class="absolute left-4 top-3.5 w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <svg class="absolute left-4 top-3.5 w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
             <input 
               type="text" 
               id="search-input" 
-              placeholder="Search projects (e.g., 'voice', 'tts', 'webgpu', 'rigging', 'rust')..." 
-              class="w-full bg-slate-900/90 border border-slate-700/60 rounded-xl pl-12 pr-4 py-3 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition"
+              placeholder="Search projects (e.g. 'voice', 'auto reply', 'webgpu', 'rigging', 'rust')..." 
+              class="w-full bg-[#0a0f1d]/90 border border-slate-700/60 rounded-xl pl-12 pr-10 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition font-sans"
               oninput="filterProjects()"
             >
+            <button id="clear-search-btn" onclick="clearSearch()" class="absolute right-3 top-3.5 text-slate-500 hover:text-white hidden transition">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
           </div>
 
           <!-- Category Chips -->
           <div class="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 font-mono text-xs" id="category-container">
-            <button onclick="setCategory('all')" class="cat-btn active px-3 py-2.5 rounded-xl bg-purple-600 text-white font-semibold transition" data-cat="all">All</button>
-            <button onclick="setCategory('ai-audio')" class="cat-btn px-3 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-gray-300 transition" data-cat="ai-audio">AI & Audio</button>
-            <button onclick="setCategory('webgpu-3d')" class="cat-btn px-3 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-gray-300 transition" data-cat="webgpu-3d">WebGPU & 3D</button>
-            <button onclick="setCategory('systems')" class="cat-btn px-3 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-gray-300 transition" data-cat="systems">Systems</button>
+            <button onclick="setCategory('all')" class="cat-btn active px-3.5 py-2.5 rounded-xl bg-purple-600 text-white font-semibold transition" data-cat="all">All</button>
+            <button onclick="setCategory('ai-audio')" class="cat-btn px-3.5 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition" data-cat="ai-audio">AI & Audio</button>
+            <button onclick="setCategory('webgpu-3d')" class="cat-btn px-3.5 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition" data-cat="webgpu-3d">WebGPU & 3D</button>
+            <button onclick="setCategory('systems')" class="cat-btn px-3.5 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition" data-cat="systems">Systems</button>
           </div>
+
         </div>
       </div>
+
     </section>
 
     <!-- Projects Grid -->
-    <main class="max-w-7xl mx-auto px-6 py-8 flex-1 w-full">
+    <main class="max-w-7xl mx-auto px-6 py-6 flex-1 w-full">
       <div class="flex items-center justify-between mb-6">
-        <h2 class="text-xl font-bold flex items-center gap-2">
-          <span>📦 Public Repositories & Downloads</span>
-          <span id="project-count" class="text-xs px-2.5 py-0.5 rounded-full bg-white/10 text-gray-300 font-mono">10 Projects</span>
+        <h2 class="text-xl font-bold flex items-center gap-2.5">
+          <span class="text-white">📦 Public Repositories</span>
+          <span id="project-count" class="text-xs px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-mono border border-purple-500/30">10 Projects</span>
         </h2>
-        <div class="text-xs text-gray-400 font-mono">Click any card to view 1-click install command</div>
+        <div class="text-xs text-slate-400 font-mono flex items-center gap-1">
+          <span>Click any card for instant command</span>
+        </div>
       </div>
 
       <div id="projects-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <!-- Project cards injected via JavaScript -->
+        <!-- Project cards injected via JavaScript with 3D Tilt Effect -->
       </div>
     </main>
 
     <!-- Footer -->
-    <footer class="glass-panel border-t border-white/10 mt-16 py-8 px-6 text-center text-sm text-gray-400">
+    <footer class="glass-nav mt-16 py-8 px-6 text-center text-sm text-slate-400">
       <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-        <div>
-          Authored & Maintained by <a href="https://github.com/nff747" target="_blank" class="text-purple-400 hover:underline font-medium">@nff747</a>
+        <div class="flex items-center gap-2">
+          <span class="text-purple-400 font-mono font-bold">nff747</span>
+          <span class="text-slate-500">•</span>
+          <span>Open-Source Systems & AI Lab</span>
         </div>
         <div class="flex items-center gap-6 font-mono text-xs">
-          <a href="https://github.com/nff747/myvoice-linux" class="hover:text-white transition">MyVoice Linux</a>
-          <a href="https://github.com/nff747" class="hover:text-white transition">GitHub Profile</a>
-          <a href="LICENSE" class="hover:text-white transition">MIT License</a>
+          <a href="https://github.com/nff747/myvoice-linux" class="hover:text-purple-300 transition">MyVoice Linux</a>
+          <a href="https://github.com/nff747" target="_blank" class="hover:text-cyan-300 transition">GitHub @nff747</a>
+          <a href="https://raw.githubusercontent.com/nff747/myvoice-linux/master/LICENSE" target="_blank" class="hover:text-emerald-300 transition">MIT License</a>
         </div>
       </div>
     </footer>
@@ -221,7 +354,7 @@
     <div class="glass-panel max-w-2xl w-full rounded-2xl border border-purple-500/40 p-6 shadow-2xl relative transform scale-95 transition-transform duration-300" id="modal-content">
       
       <!-- Close Button -->
-      <button onclick="closeModal()" class="absolute right-4 top-4 text-gray-400 hover:text-white p-2 rounded-xl bg-white/5 hover:bg-white/10 transition">
+      <button onclick="closeModal()" class="absolute right-4 top-4 text-slate-400 hover:text-white p-2 rounded-xl bg-white/5 hover:bg-white/10 transition">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
 
@@ -234,18 +367,18 @@
         </div>
       </div>
 
-      <p id="modal-desc" class="text-sm text-gray-300 mb-6 leading-relaxed">
+      <p id="modal-desc" class="text-sm text-slate-300 mb-6 leading-relaxed">
         Project description goes here...
       </p>
 
       <!-- Universal 1-Click Command Box -->
       <div class="mb-6">
-        <div class="flex items-center justify-between text-xs font-mono text-gray-400 mb-2">
-          <span>⚡ 1-Click Universal Terminal Command (No setup needed):</span>
-          <span class="text-emerald-400">Easy for Non-Coders</span>
+        <div class="flex items-center justify-between text-xs font-mono text-slate-400 mb-2">
+          <span>⚡ Universal Terminal Command:</span>
+          <span class="text-emerald-400 font-semibold">Zero-Setup Required</span>
         </div>
         <div class="relative group">
-          <pre id="modal-command" class="bg-slate-950 p-4 rounded-xl border border-purple-500/30 font-mono text-sm text-emerald-400 overflow-x-auto select-all">curl -fsSL https://raw.githubusercontent.com/nff747/myvoice-linux/master/install.sh | bash</pre>
+          <pre id="modal-command" class="bg-black/90 p-4 rounded-xl border border-purple-500/30 font-mono text-xs sm:text-sm text-emerald-400 overflow-x-auto select-all">curl -fsSL https://raw.githubusercontent.com/nff747/myvoice-linux/master/install.sh | bash</pre>
           <button onclick="copyCommand()" id="copy-btn" class="absolute right-3 top-3 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow transition active:scale-95 flex items-center gap-1.5">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10a2 2 0 00-2 2v3a2 2 0 002 2h10a2 2 0 002-2v-3a2 2 0 00-2-2z"/></svg>
             <span id="copy-text">Copy Command</span>
@@ -254,24 +387,24 @@
       </div>
 
       <!-- Quick Steps -->
-      <div class="bg-white/5 rounded-xl p-4 border border-white/10 mb-6 text-xs text-gray-300 space-y-2 font-mono">
+      <div class="bg-white/5 rounded-xl p-4 border border-white/10 mb-6 text-xs text-slate-300 space-y-2 font-mono">
         <div class="flex items-center gap-2">
           <span class="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center font-bold">1</span>
-          <span>Open your terminal (Press <code class="bg-black/50 px-1.5 py-0.5 rounded text-purple-300">Ctrl + Alt + T</code>)</span>
+          <span>Open your terminal (<code class="bg-black/50 px-1.5 py-0.5 rounded text-purple-300">Ctrl + Alt + T</code>)</span>
         </div>
         <div class="flex items-center gap-2">
           <span class="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center font-bold">2</span>
-          <span>Paste the command above and press <code class="bg-black/50 px-1.5 py-0.5 rounded text-purple-300">Enter</code></span>
+          <span>Paste the command and press <code class="bg-black/50 px-1.5 py-0.5 rounded text-purple-300">Enter</code></span>
         </div>
         <div class="flex items-center gap-2">
           <span class="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center font-bold">3</span>
-          <span>Type <code class="bg-black/50 px-1.5 py-0.5 rounded text-emerald-300">myvoice</code> anywhere to launch!</span>
+          <span>Type <code class="bg-black/50 px-1.5 py-0.5 rounded text-emerald-300">myvoice</code> in terminal to start!</span>
         </div>
       </div>
 
       <!-- Action Buttons -->
       <div class="flex items-center justify-between gap-3">
-        <a id="modal-repo-link" href="#" target="_blank" class="flex-1 text-center py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold transition">
+        <a id="modal-repo-link" href="#" target="_blank" onclick="playClickSound()" class="flex-1 text-center py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold transition">
           View on GitHub ↗
         </a>
         <button onclick="closeModal()" class="px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold transition">
@@ -282,8 +415,146 @@
     </div>
   </div>
 
-  <!-- Projects Data & Script Logic -->
+  <!-- Projects Data, Audio Engine & WebGL Scripts -->
   <script>
+    // ==========================================
+    // Synthesized Web Audio Sound FX Engine
+    // ==========================================
+    let audioCtx = null;
+    let sfxEnabled = true;
+
+    function getAudioContext() {
+      if (!audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContext();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      return audioCtx;
+    }
+
+    function toggleAudioSFX() {
+      sfxEnabled = !sfxEnabled;
+      const label = document.getElementById('sfx-label');
+      const icon = document.getElementById('sfx-icon');
+      if (sfxEnabled) {
+        label.innerText = 'SFX: ON';
+        icon.innerText = '🔊';
+        playSuccessSound();
+      } else {
+        label.innerText = 'SFX: OFF';
+        icon.innerText = '🔇';
+      }
+    }
+
+    function playHoverSound() {
+      if (!sfxEnabled) return;
+      try {
+        const ctx = getAudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(800, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1400, ctx.currentTime + 0.04);
+        gain.gain.setValueAtTime(0.015, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.04);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.04);
+      } catch (e) {}
+    }
+
+    function playClickSound() {
+      if (!sfxEnabled) return;
+      try {
+        const ctx = getAudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(600, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.06);
+        gain.gain.setValueAtTime(0.04, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.06);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.06);
+      } catch (e) {}
+    }
+
+    function playSuccessSound() {
+      if (!sfxEnabled) return;
+      try {
+        const ctx = getAudioContext();
+        const notes = [523.25, 659.25, 783.99, 1046.50]; // C Major Arpeggio
+        notes.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.045);
+          gain.gain.setValueAtTime(0.03, ctx.currentTime + idx * 0.045);
+          gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + idx * 0.045 + 0.15);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + idx * 0.045);
+          osc.stop(ctx.currentTime + idx * 0.045 + 0.15);
+        });
+      } catch (e) {}
+    }
+
+    // ==========================================
+    // Live Audio Frequency Visualizer Canvas
+    // ==========================================
+    (function initAudioWaveViz() {
+      const canvas = document.getElementById('hero-viz');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      let width = canvas.width = canvas.offsetWidth;
+      let height = canvas.height = canvas.offsetHeight;
+
+      window.addEventListener('resize', () => {
+        width = canvas.width = canvas.offsetWidth;
+        height = canvas.height = canvas.offsetHeight;
+      });
+
+      let phase = 0;
+      function drawWave() {
+        requestAnimationFrame(drawWave);
+        ctx.clearRect(0, 0, width, height);
+
+        const bars = 48;
+        const barWidth = width / bars;
+        phase += 0.04;
+
+        for (let i = 0; i < bars; i++) {
+          const norm = i / bars;
+          const wave1 = Math.sin(norm * 6 + phase);
+          const wave2 = Math.cos(norm * 10 - phase * 0.8);
+          const rawHeight = (Math.abs(wave1 * 0.6 + wave2 * 0.4)) * (height * 0.75) + 4;
+
+          const x = i * barWidth + barWidth * 0.15;
+          const y = (height - rawHeight) / 2;
+          const w = barWidth * 0.7;
+
+          const grad = ctx.createLinearGradient(0, y, 0, y + rawHeight);
+          grad.addColorStop(0, '#06b6d4');
+          grad.addColorStop(0.5, '#a855f7');
+          grad.addColorStop(1, '#3b82f6');
+
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.roundRect(x, y, w, rawHeight, 2);
+          ctx.fill();
+        }
+      }
+      drawWave();
+    })();
+
+    // ==========================================
+    // Projects Data & Search Engine
+    // ==========================================
     const PROJECTS = [
       {
         id: "myvoice-linux",
@@ -293,8 +564,9 @@
         category: "ai-audio",
         stars: "★ Active",
         language: "Python / CUDA",
+        langColor: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
         badge: "Featured AI Voice Cloner",
-        desc: "The ultimate lightning-fast AI Voice Generator, Voice Cloner & Autonomous Call Assistant. Features Whisper VAD, Discord dual-routing, and torch.compile RTX acceleration.",
+        desc: "Lightning-fast AI Voice Cloner, Autonomous Call Assistant & zero-shot TTS. Powered by CUDA 12.4 PyTorch 2.6 bfloat16, Whisper VAD, and zero-echo PipeWire Discord routing.",
         command: "curl -fsSL https://raw.githubusercontent.com/nff747/myvoice-linux/master/install.sh | bash",
         url: "https://github.com/nff747/myvoice-linux"
       },
@@ -306,6 +578,7 @@
         category: "webgpu-3d",
         stars: "★ 1",
         language: "TypeScript / WebGL",
+        langColor: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
         badge: "Zero-DOM 3D Spatial UI",
         desc: "Hardware-Accelerated Zero-DOM 3D Spatial Glassmorphism UI with Sub-Pixel Matrix3D WCAG-AAA accessibility synchronization.",
         command: "git clone https://github.com/nff747/spatial-glass-ui.git && cd spatial-glass-ui && npm install",
@@ -319,6 +592,7 @@
         category: "webgpu-3d",
         stars: "★ 3",
         language: "TypeScript / ONNX",
+        langColor: "bg-purple-500/20 text-purple-300 border-purple-500/30",
         badge: "Zero-Click Mesh Rigging",
         desc: "Zero-Click Autonomous 3D Mesh Rigging Engine. Browser-local ONNX vision model + dual-pipe zero-copy Web Workers for instant character skeleton generation.",
         command: "git clone https://github.com/nff747/auto-rig-web.git && cd auto-rig-web && npm install",
@@ -332,6 +606,7 @@
         category: "webgpu-3d",
         stars: "★ 2",
         language: "TypeScript / WebGPU",
+        langColor: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
         badge: "WebGPU Texture Upscaler",
         desc: "Real-time WebGPU & Bicubic-Hermite Procedural Texture Synthesizer. Slashes 3D web payloads by 90% via client-side quantized neural upscaling.",
         command: "git clone https://github.com/nff747/neural-texture-engine.git && cd neural-texture-engine && npm install",
@@ -345,6 +620,7 @@
         category: "webgpu-3d",
         stars: "★ 2",
         language: "TypeScript / WGSL",
+        langColor: "bg-yellow-500/20 text-yellow-300 border-yellow-500/30",
         badge: "10M+ Gaussian Splat Engine",
         desc: "WebGPU-accelerated Guarded Radix Sort & LBVH Generator for 10M+ 3D Gaussian Splats. Sub-millisecond spatial indexing in pure WGSL.",
         command: "git clone https://github.com/nff747/splat-bvh-core.git && cd splat-bvh-core && npm install",
@@ -358,6 +634,7 @@
         category: "ai-audio",
         stars: "★ 1",
         language: "TypeScript / AI",
+        langColor: "bg-purple-500/20 text-purple-300 border-purple-500/30",
         badge: "Speculative Semantic Router",
         desc: "Dual-Tier Speculative AI Semantic Router & Graph Context Engine. Sub-millisecond TTFB routing between local WebGPU models and cloud LLMs.",
         command: "git clone https://github.com/nff747/edge-context-router.git && cd edge-context-router && npm install",
@@ -371,6 +648,7 @@
         category: "systems",
         stars: "★ 1",
         language: "TypeScript / WebGPU",
+        langColor: "bg-red-500/20 text-red-300 border-red-500/30",
         badge: "Browser LLM Paging",
         desc: "Virtual Memory Paging & PCIe Ring-Buffer Wrapper for WebGPU. Run 8B+ Parameter LLMs in Chrome & Safari bypassing buffer limits.",
         command: "git clone https://github.com/nff747/webgpu-vram-pager.git && cd webgpu-vram-pager && npm install",
@@ -384,6 +662,7 @@
         category: "systems",
         stars: "★ 1",
         language: "Rust",
+        langColor: "bg-orange-500/20 text-orange-300 border-orange-500/30",
         badge: "High-Throughput Storage",
         desc: "Ultra-fast Log-Structured Merge-Tree storage engine written in Rust with lock-free memtable flushing and bloom-filter acceleration.",
         command: "git clone https://github.com/nff747/helix-lsm.git && cd helix-lsm && cargo build --release",
@@ -397,6 +676,7 @@
         category: "systems",
         stars: "★ 1",
         language: "Rust / WASM",
+        langColor: "bg-indigo-500/20 text-indigo-300 border-indigo-500/30",
         badge: "Microsecond Sandboxing",
         desc: "Zero-overhead WebAssembly runtime and sandbox designed for secure, distributed edge computation and microservice isolation.",
         command: "git clone https://github.com/nff747/nova-wasm.git && cd nova-wasm && cargo build --release",
@@ -410,6 +690,7 @@
         category: "systems",
         stars: "★ 1",
         language: "Java / Systems",
+        langColor: "bg-blue-500/20 text-blue-300 border-blue-500/30",
         badge: "Multi-Tier Caching",
         desc: "High-performance distributed caching system with low-latency memory clustering and zero-allocation serialization protocols.",
         command: "git clone https://github.com/nff747/aerocache.git && cd aerocache && mvn package",
@@ -426,21 +707,22 @@
 
       if (projects.length === 0) {
         grid.innerHTML = `
-          <div class="col-span-full py-16 text-center text-gray-400 glass-panel rounded-2xl">
+          <div class="col-span-full py-16 text-center text-slate-400 glass-panel rounded-2xl border border-white/5">
             <div class="text-4xl mb-3">🔍</div>
             <div class="text-lg font-bold text-white">No projects found matching your search</div>
-            <div class="text-sm font-mono text-gray-500 mt-1">Try clearing filters or searching for 'ai', 'voice', 'webgpu', 'rust'</div>
+            <div class="text-xs font-mono text-slate-500 mt-1">Try keywords like 'voice', 'auto reply', 'webgpu', 'rust'</div>
           </div>
         `;
         return;
       }
 
       grid.innerHTML = projects.map(p => `
-        <div class="project-card glass-panel rounded-2xl p-6 border border-white/10 flex flex-col justify-between cursor-pointer group" onclick="openModal('${p.id}')">
+        <div class="glass-card rounded-2xl p-6 flex flex-col justify-between cursor-pointer group" onclick="openModal('${p.id}')" onmouseenter="playHoverSound()" onmousemove="handleCardTilt(event, this)" onmouseleave="resetCardTilt(this)">
+          <div class="card-glare"></div>
           <div>
             <div class="flex items-start justify-between gap-2 mb-4">
               <div class="flex items-center gap-3">
-                <div class="text-2xl p-2.5 rounded-xl bg-purple-500/15 border border-purple-500/25 group-hover:scale-110 transition-transform">
+                <div class="text-2xl p-2.5 rounded-xl bg-purple-500/15 border border-purple-500/25 group-hover:scale-110 transition-transform duration-300">
                   ${p.icon}
                 </div>
                 <div>
@@ -448,17 +730,17 @@
                   <div class="text-xs font-mono text-purple-400">${p.badge}</div>
                 </div>
               </div>
-              <span class="text-xs font-mono px-2 py-0.5 rounded-full bg-slate-800 text-gray-400 border border-slate-700">${p.stars}</span>
+              <span class="text-xs font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">${p.stars}</span>
             </div>
 
-            <p class="text-sm text-gray-300 leading-relaxed font-light mb-6 line-clamp-3">
+            <p class="text-sm text-slate-300 leading-relaxed font-light mb-6 line-clamp-3">
               ${p.desc}
             </p>
           </div>
 
           <div>
             <div class="flex items-center justify-between pt-4 border-t border-white/10 text-xs font-mono">
-              <span class="px-2.5 py-1 rounded-md bg-white/5 text-gray-300">${p.language}</span>
+              <span class="px-2.5 py-1 rounded-md border ${p.langColor}">${p.language}</span>
               <button class="flex items-center gap-1.5 text-purple-400 group-hover:text-white font-semibold transition">
                 <span>⚡ 1-Click Install</span>
                 <span class="group-hover:translate-x-1 transition-transform">→</span>
@@ -469,27 +751,63 @@
       `).join('');
     }
 
+    // Interactive 3D Card Tilt Physics
+    function handleCardTilt(e, card) {
+      const rect = card.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      const centerX = rect.width / 2;
+      const centerY = rect.height / 2;
+      
+      const rotateX = ((y - centerY) / centerY) * -7;
+      const rotateY = ((x - centerX) / centerX) * 7;
+      
+      card.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02, 1.02, 1.02)`;
+      card.style.setProperty('--mouse-x', `${(x / rect.width) * 100}%`);
+      card.style.setProperty('--mouse-y', `${(y / rect.height) * 100}%`);
+    }
+
+    function resetCardTilt(card) {
+      card.style.transform = `perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)`;
+    }
+
     function filterProjects() {
-      const query = document.getElementById('search-input').value.toLowerCase().trim();
+      const input = document.getElementById('search-input');
+      const clearBtn = document.getElementById('clear-search-btn');
+      const query = input.value.toLowerCase().trim();
+      
+      clearBtn.classList.toggle('hidden', query.length === 0);
+
       const filtered = PROJECTS.filter(p => {
         const matchesCat = currentCategory === 'all' || p.category === currentCategory;
         const matchesQuery = !query || 
           p.title.toLowerCase().includes(query) || 
           p.desc.toLowerCase().includes(query) || 
-          p.language.toLowerCase().includes(query) ||
+          p.language.toLowerCase().includes(query) || 
+          p.badge.toLowerCase().includes(query) ||
           p.name.toLowerCase().includes(query);
         return matchesCat && matchesQuery;
       });
       renderProjects(filtered);
     }
 
+    function clearSearch() {
+      const input = document.getElementById('search-input');
+      input.value = '';
+      playClickSound();
+      filterProjects();
+      input.focus();
+    }
+
     function setCategory(cat) {
+      playClickSound();
       currentCategory = cat;
       document.querySelectorAll('.cat-btn').forEach(btn => {
         if (btn.getAttribute('data-cat') === cat) {
-          btn.className = 'cat-btn active px-3 py-2.5 rounded-xl bg-purple-600 text-white font-semibold transition';
+          btn.className = 'cat-btn active px-3.5 py-2.5 rounded-xl bg-purple-600 text-white font-semibold transition';
         } else {
-          btn.className = 'cat-btn px-3 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-gray-300 transition';
+          btn.className = 'cat-btn px-3.5 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition';
         }
       });
       filterProjects();
@@ -498,6 +816,7 @@
     // Modal Handlers
     let activeProject = null;
     function openModal(projectId) {
+      playClickSound();
       const p = PROJECTS.find(x => x.id === projectId) || PROJECTS[0];
       activeProject = p;
 
@@ -516,6 +835,7 @@
     }
 
     function closeModal() {
+      playClickSound();
       const modal = document.getElementById('download-modal');
       const content = document.getElementById('modal-content');
       modal.classList.add('opacity-0', 'pointer-events-none');
@@ -527,6 +847,7 @@
 
     function copyCommand() {
       if (!activeProject) return;
+      playSuccessSound();
       navigator.clipboard.writeText(activeProject.command).then(() => {
         document.getElementById('copy-text').innerText = '✓ Copied!';
         document.getElementById('copy-btn').className = 'absolute right-3 top-3 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold shadow transition flex items-center gap-1.5';
@@ -537,7 +858,32 @@
       });
     }
 
-    // Close on click outside
+    function copyHeroCommand() {
+      playSuccessSound();
+      const cmd = document.getElementById('interactive-cmd').innerText;
+      navigator.clipboard.writeText(cmd).then(() => {
+        document.getElementById('hero-copy-text').innerText = 'Copied!';
+        document.getElementById('hero-copy-btn').className = 'shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold flex items-center gap-1.5 transition text-xs shadow-md';
+        setTimeout(() => {
+          document.getElementById('hero-copy-text').innerText = 'Copy';
+          document.getElementById('hero-copy-btn').className = 'shrink-0 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-semibold flex items-center gap-1.5 transition active:scale-95 text-xs shadow-md shadow-purple-600/30';
+        }, 2500);
+      });
+    }
+
+    function setHeroPreset(preset) {
+      playClickSound();
+      const cmdEl = document.getElementById('interactive-cmd');
+      if (preset === 'myvoice') {
+        cmdEl.innerText = "curl -fsSL https://raw.githubusercontent.com/nff747/myvoice-linux/master/install.sh | bash";
+      } else if (preset === 'auto-reply') {
+        cmdEl.innerText = "myvoice --auto-reply --vad-threshold 0.65 --cuda --pipewire";
+      } else if (preset === 'webgpu') {
+        cmdEl.innerText = "git clone https://github.com/nff747/splat-bvh-core.git && cd splat-bvh-core && npm install";
+      }
+    }
+
+    // Close modal when clicking backdrop
     document.getElementById('download-modal').addEventListener('click', (e) => {
       if (e.target.id === 'download-modal') closeModal();
     });
@@ -546,36 +892,37 @@
     renderProjects(PROJECTS);
 
     // ==========================================
-    // 3D WebGL Three.js Particle & Orb Engine
+    // 3D WebGL Three.js Particle Universe & Gyro Orb
     // ==========================================
-    (function init3D() {
+    (function init3DScene() {
       const container = document.getElementById('canvas-container');
       const scene = new THREE.Scene();
       const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-      camera.position.z = 40;
+      camera.position.z = 45;
 
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       container.appendChild(renderer.domElement);
 
       // Starfield Particle Constellation
-      const particleCount = 700;
+      const particleCount = 900;
       const geometry = new THREE.BufferGeometry();
       const positions = new Float32Array(particleCount * 3);
       const colors = new Float32Array(particleCount * 3);
 
       const colorPalette = [
         new THREE.Color(0xa855f7), // purple
-        new THREE.Color(0x38bdf8), // cyan
-        new THREE.Color(0x2ea043), // green
-        new THREE.Color(0x818cf8)  // indigo
+        new THREE.Color(0x06b6d4), // cyan
+        new THREE.Color(0x3b82f6), // blue
+        new THREE.Color(0x10b981), // emerald
+        new THREE.Color(0xec4899)  // pink
       ];
 
       for (let i = 0; i < particleCount; i++) {
-        positions[i * 3] = (Math.random() - 0.5) * 120;
-        positions[i * 3 + 1] = (Math.random() - 0.5) * 120;
-        positions[i * 3 + 2] = (Math.random() - 0.5) * 80;
+        positions[i * 3] = (Math.random() - 0.5) * 140;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 140;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 90;
 
         const color = colorPalette[Math.floor(Math.random() * colorPalette.length)];
         colors[i * 3] = color.r;
@@ -587,36 +934,48 @@
       geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
       const particleMaterial = new THREE.PointsMaterial({
-        size: 1.2,
+        size: 1.4,
         vertexColors: true,
         transparent: true,
-        opacity: 0.65,
+        opacity: 0.7,
         blending: THREE.AdditiveBlending
       });
 
       const particleSystem = new THREE.Points(geometry, particleMaterial);
       scene.add(particleSystem);
 
-      // Floating Wireframe Hologram Orb
-      const sphereGeo = new THREE.IcosahedronGeometry(12, 2);
-      const sphereMat = new THREE.MeshBasicMaterial({
-        color: 0x9333ea,
-        wireframe: true,
-        transparent: true,
-        opacity: 0.15
-      });
-      const orb = new THREE.Mesh(sphereGeo, sphereMat);
-      orb.position.set(20, -10, -10);
-      scene.add(orb);
+      // Holographic Gyroscope Orb Group
+      const gyroGroup = new THREE.Group();
+      gyroGroup.position.set(26, -6, -5);
 
-      // Interactive Pointer Tracker
+      // Outer Ring
+      const outerRingGeo = new THREE.TorusGeometry(12, 0.12, 16, 100);
+      const ringMat1 = new THREE.MeshBasicMaterial({ color: 0xa855f7, transparent: true, opacity: 0.35, wireframe: true });
+      const outerRing = new THREE.Mesh(outerRingGeo, ringMat1);
+      gyroGroup.add(outerRing);
+
+      // Middle Ring
+      const midRingGeo = new THREE.TorusGeometry(9, 0.1, 16, 80);
+      const ringMat2 = new THREE.MeshBasicMaterial({ color: 0x06b6d4, transparent: true, opacity: 0.4, wireframe: true });
+      const midRing = new THREE.Mesh(midRingGeo, ringMat2);
+      gyroGroup.add(midRing);
+
+      // Core Polyhedron
+      const coreGeo = new THREE.IcosahedronGeometry(5, 1);
+      const coreMat = new THREE.MeshBasicMaterial({ color: 0x8b5cf6, wireframe: true, transparent: true, opacity: 0.5 });
+      const core = new THREE.Mesh(coreGeo, coreMat);
+      gyroGroup.add(core);
+
+      scene.add(gyroGroup);
+
+      // Interactive Pointer Tracking
       let mouseX = 0, mouseY = 0;
       let targetX = 0, targetY = 0;
 
       window.addEventListener('mousemove', (e) => {
-        mouseX = (e.clientX - window.innerWidth / 2) * 0.02;
-        mouseY = (e.clientY - window.innerHeight / 2) * 0.02;
-      });
+        mouseX = (e.clientX - window.innerWidth / 2) * 0.015;
+        mouseY = (e.clientY - window.innerHeight / 2) * 0.015;
+      }, { passive: true });
 
       window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
@@ -624,21 +983,29 @@
         renderer.setSize(window.innerWidth, window.innerHeight);
       });
 
-      // Animation Loop
+      // Smooth Animation Render Loop
+      let clock = new THREE.Clock();
       function animate() {
         requestAnimationFrame(animate);
+        const delta = clock.getDelta();
 
         targetX += (mouseX - targetX) * 0.05;
         targetY += (mouseY - targetY) * 0.05;
 
-        particleSystem.rotation.y += 0.0008;
-        particleSystem.rotation.x += 0.0004;
+        particleSystem.rotation.y += delta * 0.04;
+        particleSystem.rotation.x += delta * 0.02;
 
-        particleSystem.position.x = -targetX * 0.5;
-        particleSystem.position.y = targetY * 0.5;
+        particleSystem.position.x = -targetX * 0.6;
+        particleSystem.position.y = targetY * 0.6;
 
-        orb.rotation.x += 0.003;
-        orb.rotation.y += 0.005;
+        outerRing.rotation.x += delta * 0.6;
+        outerRing.rotation.y += delta * 0.4;
+
+        midRing.rotation.y += delta * 0.8;
+        midRing.rotation.z += delta * 0.5;
+
+        core.rotation.x -= delta * 0.5;
+        core.rotation.y -= delta * 0.7;
 
         renderer.render(scene, camera);
       }
