@@ -272,8 +272,8 @@ class MainWindow(QMainWindow):
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         # QA Round 2 Item #7: Reduced vertical margins for compact overlay
-        content_layout.setContentsMargins(8, 4, 8, 4)
-        content_layout.setSpacing(4)
+        content_layout.setContentsMargins(12, 8, 12, 8)
+        content_layout.setSpacing(8)
 
         # Text input area with inline action buttons (moved to top)
         text_input_layout = QHBoxLayout()
@@ -289,8 +289,8 @@ class MainWindow(QMainWindow):
 
         # Action buttons layout (vertical stack)
         action_buttons_layout = QVBoxLayout()
-        action_buttons_layout.setSpacing(4)
-        action_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        action_buttons_layout.setSpacing(6)
+        action_buttons_layout.setContentsMargins(4, 0, 0, 0)
 
         # Quick Speak button as small icon button
         self.quick_speak_button = QPushButton()
