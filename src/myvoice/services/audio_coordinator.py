@@ -1355,12 +1355,31 @@ class AudioCoordinator(BaseService):
                     )
                     result["virtual"] = virtual_session
 
+            # On Linux, ensure PipeWire links any active python playback stream to the virtual mic
+            self._ensure_linux_pipewire_links()
+
             self.logger.info(f"Streaming sessions started: {result}")
             return result
 
         except Exception as e:
             self.logger.error(f"Failed to start streaming sessions: {e}")
             return result
+
+    def _ensure_linux_pipewire_links(self) -> None:
+        """On Linux, connect any active Python audio playback streams to myvoice_virtual_mic."""
+        import sys, subprocess
+        if not sys.platform.startswith('linux'):
+            return
+        try:
+            out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
+            for line in out.splitlines():
+                node = line.strip()
+                if 'python' in node.lower() and 'output_fl' in node.lower():
+                    subprocess.run(['pw-link', node, 'myvoice_virtual_mic:playback_FL'], stderr=subprocess.DEVNULL)
+                elif 'python' in node.lower() and 'output_fr' in node.lower():
+                    subprocess.run(['pw-link', node, 'myvoice_virtual_mic:playback_FR'], stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self.logger.debug(f"PipeWire auto-link check: {e}")
 
     async def play_audio_chunk(
         self,
