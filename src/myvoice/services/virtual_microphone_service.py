@@ -510,6 +510,10 @@ class VirtualMicrophoneService(BaseService):
 
                 self.logger.info(f"Opening virtual microphone stream: {stream_channels}ch, {stream_sample_rate}Hz, {bits_per_sample}bit on device {device_index}")
 
+                import sys, os
+                if sys.platform.startswith('linux'):
+                    os.environ['PULSE_SINK'] = 'myvoice_virtual_mic'
+
                 stream = self._pyaudio.open(
                     format=audio_format,
                     channels=stream_channels,
@@ -788,6 +792,9 @@ class VirtualMicrophoneService(BaseService):
             'virtual',       # Generic "Virtual *" device names
             'cable',         # VB-CABLE Input/Output, CABLE-A, CABLE-B
             'vac',           # Virtual Audio Cable (vac.exe driver from ntonyx)
+            'pulse',         # Linux PulseAudio server bridge
+            'pipewire',      # Linux PipeWire server bridge
+            'myvoice',       # MyVoice custom virtual sink
         ]
 
         name_lower = device_name.lower()
@@ -938,18 +945,10 @@ class VirtualMicrophoneService(BaseService):
                     audio_format = pyaudio.paInt16
 
                 # Open streaming output.
-                #
-                # frames_per_buffer = 4096 (≈ 170 ms @ 24 kHz) — bumped from
-                # the legacy 1024 (~43 ms). Mirrors the monitor service
-                # decision (see `monitor_audio_service.py:start_streaming_session`
-                # for the full rationale). RTX 3060 smoke 2026-05-14 pinned
-                # PyAudio callback starvation as the dominant gap source
-                # (single-chunk SENTENCE_STREAM dispatch took 2× wall-clock
-                # vs audio duration). Deeper callback period gives the
-                # device callback more headroom on standard PyAudio +
-                # MME / DirectSound. Other PyAudio paths in this service
-                # keep `self.config.chunk_size` — the change is scoped to
-                # the streaming-output path only.
+                import sys, os
+                if sys.platform.startswith('linux'):
+                    os.environ['PULSE_SINK'] = 'myvoice_virtual_mic'
+
                 self._streaming_stream = self._pyaudio.open(
                     format=audio_format,
                     channels=channels,
