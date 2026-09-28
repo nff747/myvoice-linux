@@ -101,17 +101,8 @@ class KokoroEngine:
     def _build_style_cache(self):
         """Pre-calculate acoustic harmonic blends for rich, human-like voice realism."""
         try:
-            # Heart: Warm, organic human female voice with natural prosody
-            v_heart = self._kokoro.get_voice_style("af_heart")
-            v_bella = self._kokoro.get_voice_style("af_bella")
-            v_sarah = self._kokoro.get_voice_style("af_sarah")
-            try:
-                v_nicole = self._kokoro.get_voice_style("af_nicole")
-            except:
-                v_nicole = v_heart
-                
-            # 65% Heart + 15% Nicole (whispery/soft/human) + 10% Bella + 10% Sarah
-            self._style_cache["Heart"] = (0.65 * v_heart + 0.15 * v_nicole + 0.10 * v_bella + 0.10 * v_sarah).astype(np.float32)
+            # Heart: Pure af_heart for maximum fidelity (blending can introduce robotic artifacts)
+            self._style_cache["Heart"] = self._kokoro.get_voice_style("af_heart")
             self._style_cache["af_heart"] = self._style_cache["Heart"]
 
             # Adam: Natural deep, articulated conversational male voice
@@ -174,10 +165,6 @@ class KokoroEngine:
         normalized_text = self.normalize_text_for_natural_phrasing(text)
         voice_target = self._get_voice_or_style(speaker)
         
-        # Override speed for Heart to be slightly slower and more conversational if not modified
-        if (speaker == "Heart" or speaker == "af_heart") and speed == 1.0:
-            speed = 0.9
-            
         t0 = time.perf_counter()
         samples, sample_rate = self._kokoro.create(
             text=normalized_text,
@@ -222,10 +209,6 @@ class KokoroEngine:
         normalized_text = self.normalize_text_for_natural_phrasing(text)
         voice_target = self._get_voice_or_style(speaker)
         
-        # Override speed for Heart to be slightly slower and more conversational if not modified
-        if (speaker == "Heart" or speaker == "af_heart") and speed == 1.0:
-            speed = 0.9
-            
         async for chunk, sample_rate in self._kokoro.create_stream(
             text=normalized_text,
             voice=voice_target,
