@@ -105,8 +105,13 @@ class KokoroEngine:
             v_heart = self._kokoro.get_voice_style("af_heart")
             v_bella = self._kokoro.get_voice_style("af_bella")
             v_sarah = self._kokoro.get_voice_style("af_sarah")
-            # 70% Heart + 20% Bella + 10% Sarah gives smooth, non-nasal, warm human timbre
-            self._style_cache["Heart"] = (0.70 * v_heart + 0.20 * v_bella + 0.10 * v_sarah).astype(np.float32)
+            try:
+                v_nicole = self._kokoro.get_voice_style("af_nicole")
+            except:
+                v_nicole = v_heart
+                
+            # 65% Heart + 15% Nicole (whispery/soft/human) + 10% Bella + 10% Sarah
+            self._style_cache["Heart"] = (0.65 * v_heart + 0.15 * v_nicole + 0.10 * v_bella + 0.10 * v_sarah).astype(np.float32)
             self._style_cache["af_heart"] = self._style_cache["Heart"]
 
             # Adam: Natural deep, articulated conversational male voice
@@ -151,6 +156,8 @@ class KokoroEngine:
         t = re.sub(r'([,;:])(?=[^\s])', r'\1 ', t)
         # Ensure proper spacing after sentence ends
         t = re.sub(r'([.!?])(?=[^\s])', r'\1 ', t)
+        # Add micro-pauses around dashes
+        t = t.replace(' - ', ' — ')
         return t.strip()
 
     def synthesize_sync(
@@ -166,6 +173,11 @@ class KokoroEngine:
         self._ensure_loaded_sync()
         normalized_text = self.normalize_text_for_natural_phrasing(text)
         voice_target = self._get_voice_or_style(speaker)
+        
+        # Override speed for Heart to be slightly slower and more conversational if not modified
+        if (speaker == "Heart" or speaker == "af_heart") and speed == 1.0:
+            speed = 0.9
+            
         t0 = time.perf_counter()
         samples, sample_rate = self._kokoro.create(
             text=normalized_text,
@@ -209,6 +221,11 @@ class KokoroEngine:
         self._ensure_loaded_sync()
         normalized_text = self.normalize_text_for_natural_phrasing(text)
         voice_target = self._get_voice_or_style(speaker)
+        
+        # Override speed for Heart to be slightly slower and more conversational if not modified
+        if (speaker == "Heart" or speaker == "af_heart") and speed == 1.0:
+            speed = 0.9
+            
         async for chunk, sample_rate in self._kokoro.create_stream(
             text=normalized_text,
             voice=voice_target,
