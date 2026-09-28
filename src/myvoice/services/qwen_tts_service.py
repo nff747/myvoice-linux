@@ -36,6 +36,11 @@ try:
 except ImportError:
     LibraryVoiceClonePromptItem = None
 
+try:
+    from myvoice.services.kokoro_engine import KokoroEngine
+except ImportError:
+    KokoroEngine = None
+
 
 class StartupState(Enum):
     """
@@ -646,6 +651,13 @@ class QwenTTSService(BaseService):
         # Service components
         self._executor: Optional[ThreadPoolExecutor] = None
         self._request_semaphore: Optional[asyncio.Semaphore] = None
+        self._kokoro_engine: Optional[Any] = None
+        if KokoroEngine is not None:
+            try:
+                self._kokoro_engine = KokoroEngine()
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize KokoroEngine: {e}")
+                self._kokoro_engine = None
 
         # Callbacks
         self._generation_started_callback: Optional[Callable[[], None]] = None
@@ -3821,36 +3833,46 @@ class QwenTTSService(BaseService):
             )
 
             # Ensure model is loaded (lazy loading)
+            is_kokoro_voice = (
+                request.model_type == QwenModelType.CUSTOM_VOICE
+                and getattr(self, "_kokoro_engine", None) is not None
+                and self._kokoro_engine.is_available()
+                and not request.checkpoint_path
+            )
             async with self._request_semaphore:
                 self._generation_state = GenerationState.LOADING_MODEL
 
-                # Notify model loading
-                load_source = str(request.checkpoint_path) if request.checkpoint_path else request.model_type.display_name
-                if self._model_loading_callback:
-                    self._model_loading_callback(f"Loading {load_source}...")
+                if not is_kokoro_voice:
+                    # Notify model loading
+                    load_source = str(request.checkpoint_path) if request.checkpoint_path else request.model_type.display_name
+                    if self._model_loading_callback:
+                        self._model_loading_callback(f"Loading {load_source}...")
 
-                success, error = await self._model_registry.ensure_model_loaded(
-                    request.model_type,
-                    checkpoint_path=str(request.checkpoint_path) if request.checkpoint_path else None
-                )
-
-                if not success:
-                    self._failed_requests += 1
-                    self._generation_state = GenerationState.ERROR
-                    # Story 11.4: model-load-failed → ERROR → DISCARDED.
-                    if sid is not None and self._session_registry is not None:
-                        self._session_registry.post_mutation('set_error', sid)
-                        self._session_registry.post_mutation('discard', sid)
-                    if self._generation_failed_callback:
-                        self._generation_failed_callback(f"Failed to load model: {error}")
-                    return QwenTTSResponse(
-                        success=False,
-                        error_message=f"Failed to load model: {error}"
+                    success, error = await self._model_registry.ensure_model_loaded(
+                        request.model_type,
+                        checkpoint_path=str(request.checkpoint_path) if request.checkpoint_path else None
                     )
 
-                # Notify model ready
-                if self._model_ready_callback:
-                    self._model_ready_callback(request.model_type.display_name)
+                    if not success:
+                        self._failed_requests += 1
+                        self._generation_state = GenerationState.ERROR
+                        # Story 11.4: model-load-failed → ERROR → DISCARDED.
+                        if sid is not None and self._session_registry is not None:
+                            self._session_registry.post_mutation('set_error', sid)
+                            self._session_registry.post_mutation('discard', sid)
+                        if self._generation_failed_callback:
+                            self._generation_failed_callback(f"Failed to load model: {error}")
+                        return QwenTTSResponse(
+                            success=False,
+                            error_message=f"Failed to load model: {error}"
+                        )
+
+                    # Notify model ready
+                    if self._model_ready_callback:
+                        self._model_ready_callback(request.model_type.display_name)
+                else:
+                    if self._model_ready_callback:
+                        self._model_ready_callback("Kokoro (Ultra-Fast)")
 
                 # Notify generation started
                 self._generation_state = GenerationState.GENERATING
@@ -4093,36 +4115,46 @@ class QwenTTSService(BaseService):
             )
 
             # Ensure model is loaded (lazy loading)
+            is_kokoro_voice = (
+                request.model_type == QwenModelType.CUSTOM_VOICE
+                and getattr(self, "_kokoro_engine", None) is not None
+                and self._kokoro_engine.is_available()
+                and not request.checkpoint_path
+            )
             async with self._request_semaphore:
                 self._generation_state = GenerationState.LOADING_MODEL
 
-                # Notify model loading
-                load_source = str(request.checkpoint_path) if request.checkpoint_path else request.model_type.display_name
-                if self._model_loading_callback:
-                    self._model_loading_callback(f"Loading {load_source}...")
+                if not is_kokoro_voice:
+                    # Notify model loading
+                    load_source = str(request.checkpoint_path) if request.checkpoint_path else request.model_type.display_name
+                    if self._model_loading_callback:
+                        self._model_loading_callback(f"Loading {load_source}...")
 
-                success, error = await self._model_registry.ensure_model_loaded(
-                    request.model_type,
-                    checkpoint_path=str(request.checkpoint_path) if request.checkpoint_path else None
-                )
-
-                if not success:
-                    self._failed_requests += 1
-                    self._generation_state = GenerationState.ERROR
-                    # Story 11.4: model-load-failed → ERROR → DISCARDED.
-                    if sid is not None and self._session_registry is not None:
-                        self._session_registry.post_mutation('set_error', sid)
-                        self._session_registry.post_mutation('discard', sid)
-                    if self._generation_failed_callback:
-                        self._generation_failed_callback(f"Failed to load model: {error}")
-                    return QwenTTSResponse(
-                        success=False,
-                        error_message=f"Failed to load model: {error}"
+                    success, error = await self._model_registry.ensure_model_loaded(
+                        request.model_type,
+                        checkpoint_path=str(request.checkpoint_path) if request.checkpoint_path else None
                     )
 
-                # Notify model ready
-                if self._model_ready_callback:
-                    self._model_ready_callback(load_source)
+                    if not success:
+                        self._failed_requests += 1
+                        self._generation_state = GenerationState.ERROR
+                        # Story 11.4: model-load-failed → ERROR → DISCARDED.
+                        if sid is not None and self._session_registry is not None:
+                            self._session_registry.post_mutation('set_error', sid)
+                            self._session_registry.post_mutation('discard', sid)
+                        if self._generation_failed_callback:
+                            self._generation_failed_callback(f"Failed to load model: {error}")
+                        return QwenTTSResponse(
+                            success=False,
+                            error_message=f"Failed to load model: {error}"
+                        )
+
+                    # Notify model ready
+                    if self._model_ready_callback:
+                        self._model_ready_callback(load_source)
+                else:
+                    if self._model_ready_callback:
+                        self._model_ready_callback("Kokoro (Ultra-Fast)")
 
                 # Notify generation started
                 self._generation_state = GenerationState.STREAMING
@@ -6046,6 +6078,19 @@ class QwenTTSService(BaseService):
         Returns:
             Tuple[np.ndarray, int]: (audio_data, sample_rate)
         """
+        if (
+            request.model_type == QwenModelType.CUSTOM_VOICE
+            and getattr(self, "_kokoro_engine", None) is not None
+            and self._kokoro_engine.is_available()
+            and not request.checkpoint_path
+        ):
+            speaker = request.speaker or "Heart"
+            return self._kokoro_engine.synthesize_sync(
+                text=request.text,
+                speaker=speaker,
+                speed=1.0,
+            )
+
         model = self._model_registry.get_loaded_model()
         if model is None:
             raise RuntimeError("No model loaded")

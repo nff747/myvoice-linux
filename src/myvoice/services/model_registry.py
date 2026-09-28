@@ -72,6 +72,8 @@ class ModelRegistry:
 
     # Built-in speakers for CustomVoice model
     CUSTOM_VOICE_SPEAKERS = [
+        "Heart",     # Ultra-realistic natural warm female (Instant)
+        "Adam",      # Ultra-realistic natural deep male (Instant)
         "Vivian",    # Bright, slightly edgy young female (Chinese native)
         "Serena",    # Warm, gentle young female (Chinese native)
         "Uncle_Fu",  # Seasoned male, low/mellow (Chinese native)

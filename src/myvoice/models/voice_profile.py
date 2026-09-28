@@ -131,8 +131,18 @@ VALID_TIERS = ["1.7", "0.6"]  # 1.7B and 0.6B model tiers
 
 
 # Bundled speaker metadata for CustomVoice model timbres
-# Task: Integrate 9 Template Timbres into Voice Library
+# Task: Integrate Template Timbres into Voice Library
 BUNDLED_SPEAKERS = {
+    "Heart": {
+        "description": "Ultra-realistic natural warm female (Instant)",
+        "language": "English",
+        "gender": "female",
+    },
+    "Adam": {
+        "description": "Ultra-realistic natural deep male (Instant)",
+        "language": "English",
+        "gender": "male",
+    },
     "Vivian": {
         "description": "Bright, slightly edgy young female",
         "language": "Chinese",
