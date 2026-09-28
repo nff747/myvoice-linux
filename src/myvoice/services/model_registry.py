@@ -365,7 +365,9 @@ class ModelRegistry:
                 await self._unload_model(self._current_model_type)
 
             # Load the requested model
-            return await self._load_model(model_type, checkpoint_path=checkpoint_path, tier_override=tier_override)
+            if tier_override is not None:
+                return await self._load_model(model_type, checkpoint_path=checkpoint_path, tier_override=tier_override)
+            return await self._load_model(model_type, checkpoint_path=checkpoint_path)
 
     async def _load_model(
         self,

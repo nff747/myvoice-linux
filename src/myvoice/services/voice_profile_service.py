@@ -48,7 +48,7 @@ class VoiceProfileManager(BaseService):
         self,
         voice_directory: Optional[Path] = None,
         cache_file: Optional[Path] = None,
-        max_duration: float = 300.0,  # 5 minutes - Qwen3-TTS handles longer files
+        max_duration: float = 10.0,
         max_workers: int = 4,
         auto_scan: bool = True,
         transcription_queue_service: Optional[Any] = None,

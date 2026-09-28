@@ -51,8 +51,8 @@ class TestVoiceTypeOptimized:
 
     def test_optimized_sort_order(self):
         """Test OPTIMIZED sort order is between DESIGNED and CLONED."""
-        # Sort orders: BUNDLED=0, DESIGNED=1, OPTIMIZED=2, CLONED=3
-        assert VoiceType.OPTIMIZED.sort_order == 2
+        # Sort orders: BUNDLED=0, EMBEDDING=1, DESIGNED=2, OPTIMIZED=3, CLONED=4
+        assert VoiceType.OPTIMIZED.sort_order == 3
         assert VoiceType.DESIGNED.sort_order < VoiceType.OPTIMIZED.sort_order
         assert VoiceType.OPTIMIZED.sort_order < VoiceType.CLONED.sort_order
 

@@ -22,7 +22,9 @@ from myvoice.services.api_server.stream_hub import StreamHub
 
 
 def _make_app():
+    from PyQt6.QtCore import QObject
     app = MyVoiceApp.__new__(MyVoiceApp)
+    QObject.__init__(app)
     app.logger = logging.getLogger("test_origin_gating")
     app._stream_hub = StreamHub()
     app._api_origin_sessions = set()
