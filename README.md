@@ -3,7 +3,7 @@
   <p><strong>Open-Source, Low-Latency AI Voice Generator, Voice Cloner & Auto-Reply Call Assistant.</strong></p>
   <p><em>Originally forked and completely overhauled for Linux & CUDA by <a href="https://github.com/nff747">@nff747</a></em></p>
 
-  [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+  [![License: MIT](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
   [![Platform: Linux](https://img.shields.io/badge/Platform-Linux%20(Arch%20%2F%20Ubuntu%20%2F%20Fedora)-success)](#)
   [![GPU: NVIDIA](https://img.shields.io/badge/GPU-CUDA%2012.4%20%2F%20RTX%20Accelerated-76B900)](#)
   [![TTS: Qwen3--TTS](https://img.shields.io/badge/Model-Qwen3--TTS%201.7B-orange)](#)
@@ -89,7 +89,7 @@ Contributions from the open-source community are welcome!
 
 ## ⚖️ License & Open-Source Attribution
 
-This project is licensed under the **[MIT License](LICENSE)** — free and open for everyone to use, modify, and distribute.
+This project is licensed under the **[Apache-2.0 License](LICENSE)** — free and open for everyone to use, modify, and distribute.
 
 - **Linux Port, AI Auto-Reply & Major Enhancements**: [@nff747](https://github.com/nff747)
 - **Original GUI Foundation**: Original MyVoice Team

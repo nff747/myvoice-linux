@@ -27,4 +27,4 @@ We welcome contributions from the open-source community! Whether you are fixing 
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project's [MIT License](LICENSE).
+By contributing, you agree that your contributions will be licensed under the project's [Apache License 2.0](LICENSE).
