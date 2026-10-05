@@ -5,3 +5,24 @@ config/
 voice_files/
 *.log
 .DS_Store
+
+# Security & SCA Hygiene Rules
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.cert
+*.pfx
+*.p12
+node_modules/
+dist/
+build/
+out/
+target/
+.next/
+*.tsbuildinfo
+*.py[cod]
+.pytest_cache/
+venv/
+Thumbs.db
