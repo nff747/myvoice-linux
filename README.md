@@ -3,7 +3,7 @@
   <p><strong>Open-Source, Low-Latency AI Voice Generator, Voice Cloner & Auto-Reply Call Assistant.</strong></p>
   <p><em>Originally forked and completely overhauled for Linux & CUDA by <a href="https://github.com/nff747">@nff747</a></em></p>
 
-  [![License: MIT](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
+  [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
   [![Platform: Linux](https://img.shields.io/badge/Platform-Linux%20(Arch%20%2F%20Ubuntu%20%2F%20Fedora)-success)](#)
   [![GPU: NVIDIA](https://img.shields.io/badge/GPU-CUDA%2012.4%20%2F%20RTX%20Accelerated-76B900)](#)
   [![TTS: Qwen3--TTS](https://img.shields.io/badge/Model-Qwen3--TTS%201.7B-orange)](#)
