@@ -14,6 +14,8 @@
 
 ## 🌟 About This Project
 
+[![Lunar Paradox](https://img.shields.io/badge/Organization-Lunar_Paradox-0a0e1a?style=for-the-badge&logo=probot&logoColor=d7b886)](https://lunarparadox.com)
+
 This repository is an **open-source, Linux-first reimagining** of MyVoice. While built on the foundation of the original concept, the codebase has undergone a **massive architectural rework** by [@nff747](https://github.com/nff747) to eliminate Windows-specific bottlenecks, introduce native PipeWire virtual routing, accelerate inference on NVIDIA GPUs, and add an autonomous **AI Auto-Reply Mode** for live calls and Discord VC.
 
 ---
@@ -94,3 +96,7 @@ This project is licensed under the **[Apache-2.0 License](LICENSE)** — free an
 - **Linux Port, AI Auto-Reply & Major Enhancements**: [@nff747](https://github.com/nff747)
 - **Original GUI Foundation**: Original MyVoice Team
 - **Foundational Models**: Qwen3-TTS by Alibaba Qwen Team & OpenAI Whisper
+
+---
+
+*A component of the [Lunar Paradox](https://lunarparadox.com) applied systems & graphics laboratory. Engineered by nff747.*
